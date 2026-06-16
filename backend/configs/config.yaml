@@ -1,0 +1,53 @@
+server:
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: localhost
+  port: 5432
+  name: water_town
+  user: water_town
+  password: ${DB_PASSWORD:-password123}
+  ssl_mode: disable
+
+websocket:
+  path: /ws/game
+  ping_interval: 30s
+  pong_wait: 35s
+  write_wait: 10s
+  message_size_limit: 1048576  # 1MB
+
+llm:
+  api_key: ${GLM_API_KEY}
+  base_url: https://open.bigmodel.cn/api/paas/v4/chat/completions
+  model: glm-4
+  fallback_model: glm-4-flash
+  timeout: 10s
+  max_retries: 3
+  retry_delay: 1s
+
+circuit:
+  max_failures: 5
+  failure_window: 30s
+  recovery_time: 60s
+  half_open_limit: 3
+
+cost:
+  max_history_messages: 10
+  summary_threshold: 10
+  similarity_threshold: 0.95
+  cache_ttl: 3600s
+
+knowledge:
+  path: data/knowledge
+
+logging:
+  level: info
+  format: json
+
+observability:
+  enabled: false
+  service_name: watertown-guide
+  endpoint: http://localhost:4318
+  sample_rate: 1.0

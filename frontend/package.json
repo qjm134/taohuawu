@@ -1,0 +1,23 @@
+{
+  "name": "watertown-frontend",
+  "version": "1.0.0",
+  "description": "江南水乡智能导游系统前端",
+  "main": "index.html",
+  "scripts": {
+    "start": "http-server -p 3000",
+    "dev": "http-server -p 3000 -o"
+  },
+  "keywords": [
+    "game",
+    "phaser",
+    "websocket"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

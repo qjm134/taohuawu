@@ -1,0 +1,194 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/watertown/guide/internal/config"
+	"github.com/watertown/guide/internal/database"
+	"github.com/watertown/guide/internal/observability"
+	"github.com/watertown/guide/internal/websocket"
+	"github.com/watertown/guide/pkg/logging"
+	"github.com/watertown/guide/pkg/utils"
+	"gorm.io/gorm"
+)
+
+// Server HTTP 服务器
+type Server struct {
+	config         *config.Config
+	router         *gin.Engine
+	wsHandler      *websocket.Handler
+	db             *gorm.DB
+	auditRepo      database.AuditRepository
+	logger         logging.Logger
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+}
+
+// New 创建服务器
+func New(cfg *config.Config, db *gorm.DB, kb interface{}, logger logging.Logger) *Server {
+	// 创建关闭上下文
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+
+	// 创建审计日志仓库
+	auditRepo := database.NewAuditRepository(db)
+
+	s := &Server{
+		config:         cfg,
+		db:             db,
+		auditRepo:      auditRepo,
+		logger:         logger,
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
+	}
+
+	s.setupRouter()
+
+	return s
+}
+
+// setupRouter 设置路由
+func (s *Server) setupRouter() {
+	if s.config.Logging.Level == "debug" {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	s.router = gin.New()
+	s.router.Use(gin.Recovery())
+	s.router.Use(s.loggingMiddleware())
+
+	// 健康检查
+	s.router.GET("/health", s.healthCheck)
+
+	// Prometheus 指标
+	s.router.GET("/metrics", s.getMetrics)
+
+	// 审计日志 API
+	api := s.router.Group("/api/v1")
+	{
+		api.GET("/audit", s.getAuditLogs)
+	}
+
+	// WebSocket
+	s.router.GET(s.config.WebSocket.Path, s.handleWebSocket)
+}
+
+// Start 启动服务器
+func (s *Server) Start() error {
+	addr := fmt.Sprintf(":%d", s.config.Server.Port)
+	s.logger.Info("Starting server", "address", addr)
+
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      s.router,
+		ReadTimeout:  time.Duration(s.config.Server.ReadTimeout),
+		WriteTimeout: time.Duration(s.config.Server.WriteTimeout),
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+
+	return nil
+}
+
+// Shutdown 关闭服务器
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.logger.Info("Shutting down server...")
+	s.shutdownCancel()
+
+	// 给服务器 10 秒时间关闭
+	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := s.router.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+
+	s.logger.Info("Server shutdown complete")
+	return nil
+}
+
+// healthCheck 健康检查
+func (s *Server) healthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"version": "1.0.0",
+		"time":    time.Now().Unix(),
+	})
+}
+
+// getMetrics 获取指标
+func (s *Server) getMetrics(c *gin.Context) {
+	// 简化实现，实际应该返回 Prometheus 指标
+	c.Header("Content-Type", "text/plain")
+	c.String(http.StatusOK, "# Prometheus metrics\n")
+}
+
+// getAuditLogs 获取审计日志
+func (s *Server) getAuditLogs(c *gin.Context) {
+	tenantID := c.Query("tenantId")
+	if tenantID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenantId is required"})
+		return
+	}
+
+	pageStr := c.DefaultQuery("page", "1")
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
+	}
+
+	pageSizeStr := c.DefaultQuery("pageSize", "20")
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	logs, total, err := s.auditRepo.GetByTenantID(tenantID, time.Time{}, time.Time{}, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"logs":     logs,
+	})
+}
+
+// loggingMiddleware 日志中间件
+func (s *Server) loggingMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+
+		c.Next()
+
+		duration := time.Since(start)
+		s.logger.Info("HTTP request",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", c.Writer.Status(),
+			"duration", duration,
+		)
+	}
+}
+
+// handleWebSocket 处理 WebSocket
+func (s *Server) handleWebSocket(c *gin.Context) {
+	s.wsHandler.Handle(c)
+}
+
+// SetWebSocketHandler 设置 WebSocket 处理器
+func (s *Server) SetWebSocketHandler(handler *Handler) {
+	s.wsHandler = handler
+}
