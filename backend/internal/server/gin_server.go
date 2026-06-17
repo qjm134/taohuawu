@@ -2,19 +2,21 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/watertown/guide/internal/agent"
 	"github.com/watertown/guide/internal/config"
+	"github.com/watertown/guide/internal/cost"
 	"github.com/watertown/guide/internal/database"
-	"github.com/watertown/guide/internal/observability"
+	"github.com/watertown/guide/internal/emotion"
+	"github.com/watertown/guide/internal/llm"
+	"github.com/watertown/guide/internal/knowledge"
 	"github.com/watertown/guide/internal/websocket"
 	"github.com/watertown/guide/pkg/logging"
-	"github.com/watertown/guide/pkg/utils"
 	"gorm.io/gorm"
 )
 
@@ -22,12 +24,18 @@ import (
 type Server struct {
 	config         *config.Config
 	router         *gin.Engine
-	wsHandler      *websocket.Handler
+	wsHandler      *WebSocketHandler
+	server         *http.Server
 	db             *gorm.DB
 	auditRepo      database.AuditRepository
 	logger         logging.Logger
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+
+	// Agent 组件
+	agentHub       *websocket.Hub
+	agentRuntime   *agent.Runtime
+	sessionManager *agent.SessionManager
 }
 
 // New 创建服务器
@@ -48,6 +56,7 @@ func New(cfg *config.Config, db *gorm.DB, kb interface{}, logger logging.Logger)
 	}
 
 	s.setupRouter()
+	s.initAgentComponents(kb)
 
 	return s
 }
@@ -88,9 +97,11 @@ func (s *Server) Start() error {
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      s.router,
-		ReadTimeout:  time.Duration(s.config.Server.ReadTimeout),
-		WriteTimeout: time.Duration(s.config.Server.WriteTimeout),
+		ReadTimeout:  s.config.Server.ReadTimeout.Duration,
+		WriteTimeout: s.config.Server.WriteTimeout.Duration,
 	}
+
+	s.server = server
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
@@ -108,7 +119,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	if err := s.router.Shutdown(shutdownCtx); err != nil {
+	if err := s.server.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
 
@@ -189,6 +200,68 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 }
 
 // SetWebSocketHandler 设置 WebSocket 处理器
-func (s *Server) SetWebSocketHandler(handler *Handler) {
+func (s *Server) SetWebSocketHandler(handler *WebSocketHandler) {
 	s.wsHandler = handler
+}
+
+// initAgentComponents 初始化 Agent 组件
+func (s *Server) initAgentComponents(kb interface{}) {
+	// 创建 WebSocket Hub
+	s.agentHub = websocket.NewHub()
+	go s.agentHub.Run()
+
+	// 创建会话管理器
+	s.sessionManager = agent.NewSessionManager()
+
+	// 创建 LLM 适配器
+	llmAdapter := llm.NewGLMAdapter(
+		s.config.LLM.APIKey,
+		s.config.LLM.BaseURL,
+		s.config.LLM.Model,
+		s.config.LLM.Timeout.Duration,
+	)
+	fallbackAdapter := llm.NewFallbackAdapter()
+
+	// 创建工具注册表
+	toolRegistry := agent.NewToolRegistry(kb.(*knowledge.KnowledgeBase))
+
+	// 创建成本优化器
+	optimizer := cost.NewOptimizer(
+		s.config.Cost.CacheTTL.Duration,
+		s.config.Cost.MaxHistoryMessages,
+		nil, // TODO: Implement embedding API
+	)
+
+	// 创建情绪检测器
+	emotionDetector := emotion.NewRuleBasedDetector()
+
+	// 创建 Agent 运行时
+	s.agentRuntime = agent.NewRuntime(
+		llmAdapter,
+		fallbackAdapter,
+		toolRegistry,
+		s.sessionManager,
+		optimizer,
+		emotionDetector,
+		agent.Config{
+			MaxRetries:  s.config.LLM.MaxRetries,
+			Timeout:     s.config.LLM.Timeout.Duration,
+			LLMTimeout:  s.config.LLM.Timeout.Duration,
+			ToolTimeout: s.config.LLM.Timeout.Duration,
+		},
+	)
+
+	// 创建 WebSocket 处理器
+	wsHandler := NewWebSocketHandler(
+		s.agentHub,
+		s.sessionManager,
+		s.agentRuntime,
+		database.NewPlayerRepository(s.db),
+		database.NewConversationRepository(s.db),
+		s.auditRepo,
+		s.logger,
+	)
+
+	// 设置 WebSocket 处理器
+	s.SetWebSocketHandler(wsHandler)
 }

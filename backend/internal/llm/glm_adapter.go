@@ -14,14 +14,14 @@ import (
 
 // GLMAdapter GLM-4.7 适配器
 type GLMAdapter struct {
-	apiKey      string
-	baseURL     string
-	model       string
-	client      *http.Client
-	timeout     time.Duration
-	maxRetries  int
-	retryDelay  time.Duration
-	circuit     *CircuitBreaker
+	apiKey     string
+	baseURL    string
+	model      string
+	client     *http.Client
+	timeout    time.Duration
+	maxRetries int
+	retryDelay time.Duration
+	circuit    *CircuitBreaker
 }
 
 // NewGLMAdapter 创建 GLM 适配器
@@ -46,7 +46,6 @@ func (a *GLMAdapter) Chat(ctx context.Context, req *LLMRequest) (*LLMResponse, e
 	}
 
 	var response *LLMResponse
-	var lastErr error
 
 	// 带重试
 	ctx, cancel := utils.WithTimeoutFrom(ctx, a.timeout)

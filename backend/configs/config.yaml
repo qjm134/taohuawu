@@ -5,11 +5,12 @@ server:
 
 database:
   host: localhost
-  port: 5432
+  port: 3306
   name: water_town
-  user: water_town
+  user: root
   password: ${DB_PASSWORD:-password123}
-  ssl_mode: disable
+  # MySQL doesn't use SSL mode in the same way
+  # ssl_mode: disable
 
 websocket:
   path: /ws/game
@@ -45,6 +46,13 @@ knowledge:
 logging:
   level: info
   format: json
+  file:
+    enabled: true
+    path: logs/app.log
+    max_size: 100    # MB
+    max_backups: 3
+    max_age: 28       # days
+    compress: true
 
 observability:
   enabled: false

@@ -1,8 +1,9 @@
 package websocket
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"sync"
 	"time"
 
@@ -21,7 +22,7 @@ const (
 	maxMessageSize = 1024 * 1024 // 1MB
 )
 
-var upgrader = websocket.Upgrader{
+var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
@@ -44,8 +45,8 @@ type Client struct {
 type Hub struct {
 	clients    map[string]*Client
 	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
+	Register   chan *Client
+	Unregister chan *Client
 	mu         sync.RWMutex
 }
 
@@ -54,8 +55,8 @@ func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[string]*Client),
 		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		Register:   make(chan *Client),
+		Unregister: make(chan *Client),
 	}
 }
 
@@ -63,12 +64,12 @@ func NewHub() *Hub {
 func (h *Hub) Run() {
 	for {
 		select {
-		case client := <-h.register:
+		case client := <-h.Register:
 			h.mu.Lock()
 			h.clients[client.ID] = client
 			h.mu.Unlock()
 
-		case client := <-h.unregister:
+		case client := <-h.Unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[client.ID]; ok {
 				delete(h.clients, client.ID)
@@ -83,7 +84,7 @@ func (h *Hub) Run() {
 				case client.Send <- message:
 				default:
 					// 客户端缓冲区满，断开连接
-					h.unregister <- client
+					h.Unregister <- client
 				}
 			}
 			h.mu.RUnlock()
@@ -110,7 +111,7 @@ func (h *Hub) BroadcastToTenant(tenantID string, message []byte) {
 
 // UnregisterClient 注销客户端
 func (h *Hub) UnregisterClient(client *Client) {
-	h.unregister <- client
+	h.Unregister <- client
 }
 
 // WritePump 写入泵

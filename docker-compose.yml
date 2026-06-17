@@ -1,20 +1,20 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: watertown-postgres
+  mysql:
+    image: mysql:8.0
+    container_name: watertown-mysql
     environment:
-      POSTGRES_DB: water_town
-      POSTGRES_USER: water_town
-      POSTGRES_PASSWORD: password123
+      MYSQL_DATABASE: water_town
+      MYSQL_USER: water_town
+      MYSQL_PASSWORD: password123
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql/data
       - ./backend/data/migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U water_town"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -27,8 +27,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
+      DB_HOST: mysql
+      DB_PORT: 3306
       DB_NAME: water_town
       DB_USER: water_town
       DB_PASS: password123
@@ -37,7 +37,7 @@ services:
       - ./backend/data:/app/data
       - ./backend/configs:/app/configs
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -60,4 +60,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  postgres_data:
+  mysql_data:

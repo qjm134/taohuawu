@@ -9,12 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/watertown/guide/internal/agent"
 	"github.com/watertown/guide/internal/database"
-	"github.com/watertown/guide/internal/emotion"
-	"github.com/watertown/guide/internal/knowledge"
-	"github.com/watertown/guide/internal/llm"
 	"github.com/watertown/guide/internal/websocket"
 	"github.com/watertown/guide/pkg/logging"
-	"github.com/watertown/guide/pkg/utils"
 )
 
 // WebSocketHandler WebSocket 处理器
@@ -52,7 +48,7 @@ func NewWebSocketHandler(
 // Handle 处理 WebSocket 连接
 func (h *WebSocketHandler) Handle(c *gin.Context) {
 	// 升级 HTTP 连接为 WebSocket 连接
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := websocket.Upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed", "error", err)
 		return
@@ -62,7 +58,7 @@ func (h *WebSocketHandler) Handle(c *gin.Context) {
 	client := websocket.NewClient(conn, "", "", nil)
 
 	// 注册客户端到 Hub
-	h.hub.register <- client
+	h.hub.Register <- client
 
 	// 启动读写泵
 	go client.WritePump()
@@ -107,13 +103,13 @@ func (h *WebSocketHandler) handleConnection(client *websocket.Client, msg *webso
 	if err != nil {
 		// 创建新玩家
 		player = &database.Player{
-			ID:              uuid.New().String(),
-			TenantID:        msg.TenantID,
-			Nickname:        payload.Nickname,
-			DeviceID:        payload.DeviceID,
-			FirstVisitTime:  time.Now(),
-			LastVisitTime:   time.Now(),
-			TotalDialogues:  0,
+			ID:             uuid.New().String(),
+			TenantID:       msg.TenantID,
+			Nickname:       payload.Nickname,
+			DeviceID:       payload.DeviceID,
+			FirstVisitTime: time.Now(),
+			LastVisitTime:  time.Now(),
+			TotalDialogues: 0,
 		}
 		if err := h.playerRepo.Create(player); err != nil {
 			h.logger.Error("Failed to create player", "error", err)

@@ -7,7 +7,7 @@
 - **Go 1.22** - 编程语言
 - **Gin** - HTTP 框架
 - **Gorilla WebSocket** - WebSocket 支持
-- **PostgreSQL** - 数据库
+- **MySQL** - 数据库
 - **GLM-4.7** - 大语言模型
 - **Prometheus** - 指标监控
 
@@ -39,8 +39,12 @@ backend/
 ### 环境要求
 
 - Go 1.22+
-- PostgreSQL 16+
+- MySQL 8.0+
 - GLM-4.7 API Key
+
+备注：
+   测试时需要在数据库里创建数据库，表会自动创建
+   线上项目已经配置了 Docker Compose，会自动创建数据库
 
 ### 配置
 

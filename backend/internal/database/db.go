@@ -2,7 +2,7 @@ package database
 
 import (
 	"github.com/watertown/guide/internal/config"
-	"gorm.io/driver/postgres"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -11,7 +11,7 @@ import (
 func Init(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	dsn := cfg.GetDSN()
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {

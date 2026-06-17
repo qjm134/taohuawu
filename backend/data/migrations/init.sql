@@ -1,4 +1,4 @@
--- 数据库初始化脚本
+-- MySQL 数据库初始化脚本
 -- GORM 会自动创建表结构，这里只是作为备份参考
 
 -- 玩家表
@@ -7,11 +7,11 @@ CREATE TABLE IF NOT EXISTS players (
     tenant_id VARCHAR(32) NOT NULL,
     nickname VARCHAR(64) NOT NULL,
     device_id VARCHAR(128),
-    first_visit_time TIMESTAMP NOT NULL DEFAULT NOW(),
-    last_visit_time TIMESTAMP NOT NULL DEFAULT NOW(),
+    first_visit_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_visit_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     total_dialogues INT NOT NULL DEFAULT 0,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_players_tenant ON players(tenant_id);
@@ -26,12 +26,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_message TEXT NOT NULL,
     ai_message TEXT NOT NULL,
     emotion VARCHAR(16),
-    tools_used JSONB,
+    tools_used JSON,
     llm_model VARCHAR(32),
     llm_tokens INT,
     cost DECIMAL(10,6),
     cache_hit BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_player ON conversations(player_id);
@@ -45,12 +45,12 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     player_id VARCHAR(64),
     tenant_id VARCHAR(32) NOT NULL,
     action VARCHAR(32) NOT NULL,
-    request_payload JSONB,
-    response_payload JSONB,
+    request_payload JSON,
+    response_payload JSON,
     error_message TEXT,
     status VARCHAR(16) NOT NULL,
     latency_ms INT,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_logs(tenant_id);

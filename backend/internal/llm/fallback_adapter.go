@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 )
 
 // FallbackAdapter 备用适配器（返回兜底回复）
@@ -65,13 +64,13 @@ func (a *FallbackAdapter) Chat(ctx context.Context, req *LLMRequest) (*LLMRespon
 func (a *FallbackAdapter) matchResponse(message string) string {
 	// 简单关键词匹配
 	keywords := map[string]string{
-		"欢迎": "welcome",
-		"怎么玩": "operation",
+		"欢迎":   "welcome",
+		"怎么玩":  "operation",
 		"怎么操作": "operation",
-		"移动": "operation",
-		"任务": "task",
-		"赚钱": "money",
-		"金币": "money",
+		"移动":   "operation",
+		"任务":   "task",
+		"赚钱":   "money",
+		"金币":   "money",
 	}
 
 	for kw, key := range keywords {

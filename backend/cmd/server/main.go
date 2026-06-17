@@ -25,7 +25,31 @@ func main() {
 	}
 
 	// 初始化日志
-	logger := logging.New(cfg.Logging)
+	var logger logging.Logger
+	if cfg.Logging.File.Enabled {
+		fileLogger, err := logging.NewFileLogger(logging.Config{
+			Level:  cfg.Logging.Level,
+			Format: cfg.Logging.Format,
+		}, logging.FileLoggerConfig{
+			Enabled:    cfg.Logging.File.Enabled,
+			Path:       cfg.Logging.File.Path,
+			MaxSize:    cfg.Logging.File.MaxSize,
+			MaxBackups: cfg.Logging.File.MaxBackups,
+			MaxAge:     cfg.Logging.File.MaxAge,
+			Compress:   cfg.Logging.File.Compress,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to initialize file logger: %v\n", err)
+			os.Exit(1)
+		}
+		defer fileLogger.Close()
+		logger = fileLogger
+	} else {
+		logger = logging.New(logging.Config{
+			Level:  cfg.Logging.Level,
+			Format: cfg.Logging.Format,
+		})
+	}
 	logger.Info("Starting Water Town Guide Server...")
 
 	// 初始化数据库
@@ -42,7 +66,12 @@ func main() {
 	logger.Info("Knowledge base loaded", "questions", len(kb.Categories))
 
 	// 初始化 OpenTelemetry
-	tp, err := observability.InitTracing(cfg.Observability)
+	tp, err := observability.InitTracing(observability.ObservabilityConfig{
+		Enabled:     cfg.Observability.Enabled,
+		ServiceName: cfg.Observability.ServiceName,
+		Endpoint:    cfg.Observability.Endpoint,
+		SampleRate:  cfg.Observability.SampleRate,
+	})
 	if err != nil {
 		logger.Warn("Failed to initialize tracing", "error", err)
 	} else {

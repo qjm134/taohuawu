@@ -26,10 +26,23 @@ type logger struct {
 	*logrus.Logger
 }
 
+// 确保 logger 实现了 FileLogger 接口的一部分
+var _ Logger = (*logger)(nil)
+
 // Config 日志配置
 type Config struct {
 	Level  string
 	Format string // json or text
+}
+
+// FileLoggerConfig 文件日志配置
+type FileLoggerConfig struct {
+	Enabled    bool
+	Path       string
+	MaxSize    int // MB
+	MaxBackups int
+	MaxAge     int // days
+	Compress   bool
 }
 
 // New 创建日志实例

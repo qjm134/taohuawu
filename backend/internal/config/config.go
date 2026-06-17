@@ -4,27 +4,28 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Database   DatabaseConfig   `yaml:"database"`
-	WebSocket  WebSocketConfig  `yaml:"websocket"`
-	LLM        LLMConfig        `yaml:"llm"`
-	Circuit    CircuitConfig    `yaml:"circuit"`
-	Cost       CostConfig       `yaml:"cost"`
-	Knowledge  KnowledgeConfig   `yaml:"knowledge"`
-	Logging    LoggingConfig    `yaml:"logging"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	WebSocket     WebSocketConfig     `yaml:"websocket"`
+	LLM           LLMConfig           `yaml:"llm"`
+	Circuit       CircuitConfig       `yaml:"circuit"`
+	Cost          CostConfig          `yaml:"cost"`
+	Knowledge     KnowledgeConfig     `yaml:"knowledge"`
+	Logging       LoggingConfig       `yaml:"logging"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
 
 type ServerConfig struct {
-	Port         int           `yaml:"port"`
-	ReadTimeout  timeDuration  `yaml:"read_timeout"`
-	WriteTimeout timeDuration  `yaml:"write_timeout"`
+	Port         int          `yaml:"port"`
+	ReadTimeout  timeDuration `yaml:"read_timeout"`
+	WriteTimeout timeDuration `yaml:"write_timeout"`
 }
 
 type DatabaseConfig struct {
@@ -37,35 +38,35 @@ type DatabaseConfig struct {
 }
 
 type WebSocketConfig struct {
-	Path            string      `yaml:"path"`
-	PingInterval    timeDuration `yaml:"ping_interval"`
-	PongWait        timeDuration `yaml:"pong_wait"`
-	WriteWait       timeDuration `yaml:"write_wait"`
-	MessageSizeLimit int64      `yaml:"message_size_limit"`
+	Path             string       `yaml:"path"`
+	PingInterval     timeDuration `yaml:"ping_interval"`
+	PongWait         timeDuration `yaml:"pong_wait"`
+	WriteWait        timeDuration `yaml:"write_wait"`
+	MessageSizeLimit int64        `yaml:"message_size_limit"`
 }
 
 type LLMConfig struct {
-	APIKey         string      `yaml:"api_key"`
-	BaseURL        string      `yaml:"base_url"`
-	Model          string      `yaml:"model"`
-	FallbackModel  string      `yaml:"fallback_model"`
-	Timeout        timeDuration `yaml:"timeout"`
-	MaxRetries     int         `yaml:"max_retries"`
-	RetryDelay     timeDuration `yaml:"retry_delay"`
+	APIKey        string       `yaml:"api_key"`
+	BaseURL       string       `yaml:"base_url"`
+	Model         string       `yaml:"model"`
+	FallbackModel string       `yaml:"fallback_model"`
+	Timeout       timeDuration `yaml:"timeout"`
+	MaxRetries    int          `yaml:"max_retries"`
+	RetryDelay    timeDuration `yaml:"retry_delay"`
 }
 
 type CircuitConfig struct {
-	MaxFailures   int         `yaml:"max_failures"`
+	MaxFailures   int          `yaml:"max_failures"`
 	FailureWindow timeDuration `yaml:"failure_window"`
 	RecoveryTime  timeDuration `yaml:"recovery_time"`
-	HalfOpenLimit int         `yaml:"half_open_limit"`
+	HalfOpenLimit int          `yaml:"half_open_limit"`
 }
 
 type CostConfig struct {
-	MaxHistoryMessages int         `yaml:"max_history_messages"`
-	SummaryThreshold   int         `yaml:"summary_threshold"`
-	SimilarityThreshold float64    `yaml:"similarity_threshold"`
-	CacheTTL          timeDuration `yaml:"cache_ttl"`
+	MaxHistoryMessages  int          `yaml:"max_history_messages"`
+	SummaryThreshold    int          `yaml:"summary_threshold"`
+	SimilarityThreshold float64      `yaml:"similarity_threshold"`
+	CacheTTL            timeDuration `yaml:"cache_ttl"`
 }
 
 type KnowledgeConfig struct {
@@ -73,14 +74,24 @@ type KnowledgeConfig struct {
 }
 
 type LoggingConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
+	Level  string       `yaml:"level"`
+	Format string       `yaml:"format"`
+	File   FileLoggerConfig `yaml:"file"`
+}
+
+type FileLoggerConfig struct {
+	Enabled    bool `yaml:"enabled"`
+	Path       string `yaml:"path"`
+	MaxSize    int    `yaml:"max_size"`    // MB
+	MaxBackups int    `yaml:"max_backups"`
+	MaxAge     int    `yaml:"max_age"`     // days
+	Compress   bool   `yaml:"compress"`
 }
 
 type ObservabilityConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	ServiceName string `yaml:"service_name"`
-	Endpoint    string `yaml:"endpoint"`
+	Enabled     bool    `yaml:"enabled"`
+	ServiceName string  `yaml:"service_name"`
+	Endpoint    string  `yaml:"endpoint"`
 	SampleRate  float64 `yaml:"sample_rate"`
 }
 
@@ -143,7 +154,10 @@ func (d timeDuration) MarshalYAML() (interface{}, error) {
 // Load 加载配置
 func Load() (*Config, error) {
 	// 加载 .env 文件
-	_ = godotenv.Load()
+	err := godotenv.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load .env: %w", err)
+	}
 
 	cfg := &Config{}
 
@@ -186,6 +200,6 @@ func Load() (*Config, error) {
 
 // GetDSN 获取数据库连接字符串
 func (c *DatabaseConfig) GetDSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		c.Host, c.Port, c.User, c.Password, c.Name, c.SSLMode)
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		c.User, c.Password, c.Host, c.Port, c.Name)
 }
