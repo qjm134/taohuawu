@@ -36,7 +36,7 @@ html, body {
     overflow: hidden;
     font-family: var(--font-body);
     color: var(--ink-medium);
-    background: url('/assets/background.png') no-repeat center center fixed;
+    background: url('/assets/images/background.png') no-repeat center center fixed;
     background-size: cover;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
