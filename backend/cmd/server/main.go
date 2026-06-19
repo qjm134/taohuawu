@@ -83,7 +83,10 @@ func main() {
 	}
 
 	// 初始化服务器
-	srv := server.New(cfg, db, kb, logger)
+	srv, err := server.New(cfg, db, kb, logger)
+	if err != nil {
+		logger.Fatal("Failed to initialize server", "error", err)
+	}
 
 	// 启动服务器
 	go func() {

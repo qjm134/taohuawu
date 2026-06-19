@@ -2,7 +2,7 @@
 
 ## Context
 
-创建一个基于2D在线游戏的智能导游系统，玩家进入江南水乡场景后，由NPC少女导游提供游戏指引和基础问答服务。系统需要支持上下文记忆、情绪感知、成本控制和资源隔离等企业级特性。
+创建一个基于2D在线游戏的智能导游系统，玩家进入江南水乡场景后，由NPC少女导游提供游戏指引和基础问答服务。系统需要支持上下文记忆、情绪感知、成本控制、多模型自动切换和资源隔离等企业级特性。
 
 ---
 
@@ -47,11 +47,11 @@
 │  │  │  - 上下文缓存 (Redis可选)                            │ │   │
 │  │  └─────────────────────────────────────────────────────┘ │   │
 │  │  ┌─────────────────────────────────────────────────────┐ │   │
-│  │  │  LLM Adapter                                         │ │   │
-│  │  │  - GLM-4.7 调用 (主模型)                             │ │   │
-│  │  │  - 备用模型 (熔断降级)                               │ │   │
-│  │  │  - 超时控制 (10s)                                    │ │   │
-│  │  │  - 重试机制 (指数退避)                               │ │   │
+│  │  │  Multi-Model Adapter (多模型适配器)                   │ │   │
+│  │  │  - GLM-4/GLM-4-Flash 调用                          │ │   │
+│  │  │  - 自动模型切换 (余额不足/失败时)                     │ │   │
+│  │  │  - 熔断降级                                         │ │   │
+│  │  │  - 超时控制 (10s) / 重试机制                        │ │   │
 │  │  └─────────────────────────────────────────────────────┘ │   │
 │  │  ┌─────────────────────────────────────────────────────┐ │   │
 │  │  │  Tool Registry (工具注册表)                          │ │   │
@@ -77,7 +77,7 @@
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  Data Layer                                               │   │
 │  │  ┌─────────────────────────────────────────────────────┐ │   │
-│  │  │  PostgreSQL                                         │ │   │
+│  │  │  MySQL 8.0                                           │ │   │
 │  │  │  - players (玩家表)                                 │ │   │
 │  │  │  - conversations (对话记录表)                       │ │   │
 │  │  │  - audit_logs (审计日志表)                          │ │   │
@@ -151,9 +151,11 @@
                                           │                  │
                                           ▼                  ▼
                                    ┌──────────┐    ┌──────────┐
-                                   │ Tool     │    │ LLM      │
-                                   │ 5s超时   │    │ 10s超时  │
-                                   └──────────┘    └──────────┘
+                                   │ Tool     │    │ Multi-Model│
+                                   │ 5s超时   │    │  Adapter  │
+                                   └──────────┘    │ 10s超时  │
+                                          │        │ 自动切换  │
+                                          │        └──────────┘
                                           │                  │
                                           └────────┬─────────┘
                                                    ▼
@@ -165,45 +167,53 @@
                                                    ▼
                                           ┌──────────────────┐
                                           │  审计日志         │
-                                          │  PostgreSQL       │
+                                          │  MySQL            │
                                           └──────────────────┘
                                                    │
 ◄──────────────────────────────────────────────────┘
         返回NPC回复 (带情绪调整)
 ```
 
-### 1.3 时序图
+### 1.3 多模型切换流程图
 
 ```
-玩家      Phaser      WebSocket      SessionMgr     Agent      Tool       LLM      PG
- │           │              │              │          │          │          │         │
- ├─连接──────►│              │              │          │          │          │         │
- │           ├─建立WS连接───►│              │          │          │          │         │
- │           │              ├─创建会话─────►│          │          │          │         │
- │           │              │              ├─检查首次──►│          │          │         │
- │           │              │              │◄─返回true─┤          │          │         │
- │           │              │              ├─欢迎处理──►│          │          │         │
- │           │              │              │          ├─调用LLM────────────────►│       │
- │           │              │              │◄─返回欢迎─┤◄────────────┤          │       │
- │           │              │◄─推送欢迎─────┤          │          │          │         │
- │◄─显示NPC问候─────────────┤              │          │          │          │         │
- │           │              │              │          │          │          │         │
- ├─输入──────►│              │              │          │          │          │         │
- │           ├─发送消息─────►│              │          │          │          │         │
- │           │              ├─消息路由─────►│          │          │          │         │
- │           │              │              ├─成本检查─►│          │          │         │
- │           │              │              │◄─需调用──┤          │          │         │
- │           │              │              ├─处理请求─►│          │          │         │
- │           │              │              │          ├─情绪感知─┤          │         │
- │           │              │              │          ├─工具调用────────────►│       │
- │           │              │              │          │◄─返回数据─┤◄─────────┤         │
- │           │              │              │          ├─调用LLM────────────────►│       │
- │           │              │              │          │◄─生成回复─┤◄────────────┤         │
- │           │              │              │◄─返回回复─┤          │          │         │
- │           │              │              ├─写审计日志────────────────────────────►│
- │           │              │◄─推送NPC回复─┤          │          │          │         │
- │◄─显示对话框─────────────────────────────┤              │          │          │         │
- │           │              │              │          │          │          │         │
+多模型切换机制:
+┌──────────────────┐
+│  当前模型调用    │
+└────────┬─────────┘
+         │ 失败?
+         ▼
+    ┌────┴────┐
+    │  否     │ 是
+    └────┬────┘    ┌──────────────────────────┐
+         │         │  标记当前模型失败        │
+         ▼         │  (连续失败>阈值则禁用)   │
+    返回结果       └──────────┬───────────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │  auto_switch=true?│
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              │ 否                          │ 是
+              ▼                             ▼
+      返回错误消息                   ┌──────────────────┐
+                                    │  查找下一个      │
+                                    │  可用模型        │
+                                    └────────┬─────────┘
+                                             │
+                                    ┌────────┴────────┐
+                                    │ 找到可用模型?    │
+                                    └────────┬────────┘
+                                             │
+                        ┌─────────────────────┴─────────────────────┐
+                        │ 否                                         │ 是
+                        ▼                                            ▼
+                ┌──────────────────┐                       ┌──────────────────┐
+                │  使用兜底适配器  │                       │  切换到新模型    │
+                │  返回预设回复    │                       │  重试请求        │
+                └──────────────────┘                       └──────────────────┘
 ```
 
 ---
@@ -220,7 +230,7 @@ backend/
 │
 ├── internal/
 │   ├── config/
-│   │   └── config.go                  # 配置管理
+│   │   └── config.go                  # 配置管理（支持多模型配置）
 │   │
 │   ├── server/
 │   │   ├── gin_server.go              # HTTP服务器
@@ -240,8 +250,9 @@ backend/
 │   │
 │   ├── llm/
 │   │   ├── adapter.go                 # LLM适配器接口
-│   │   ├── glm_adapter.go             # GLM-4.7实现
-│   │   ├── fallback_adapter.go        # 备用模型实现
+│   │   ├── glm_adapter.go             # GLM实现
+│   │   ├── multi_model_adapter.go     # 多模型适配器（新增）
+│   │   ├── fallback_adapter.go        # 兜底适配器
 │   │   └── circuit_breaker.go         # 熔断器
 │   │
 │   ├── cost/
@@ -254,7 +265,7 @@ backend/
 │   │   └── rule_based.go              # 规则匹配实现
 │   │
 │   ├── database/
-│   │   ├── db.go                      # 数据库连接
+│   │   ├── db.go                      # MySQL数据库连接
 │   │   ├── models.go                  # 数据模型
 │   │   ├── player_repo.go             # 玩家仓储
 │   │   ├── conversation_repo.go       # 对话仓储
@@ -284,9 +295,10 @@ backend/
 │       └── init.sql                   # 数据库初始化脚本
 │
 ├── configs/
-│   ├── config.yaml                    # 配置文件
+│   ├── config.yaml                    # 配置文件（含多模型配置）
 │   └── config.example.yaml
 │
+├── MODEL_CONFIG.md                    # 多模型配置说明文档
 ├── Dockerfile
 ├── go.mod
 ├── go.sum
@@ -299,7 +311,7 @@ backend/
 frontend/
 ├── index.html                         # 入口页面
 ├── css/
-│   └── styles.css                     # 全局样式
+│   └── styles.css                     # 全局样式（江南水乡主题）
 │
 ├── js/
 │   ├── main.js                        # 主入口
@@ -315,7 +327,7 @@ frontend/
 │   │   └── Background.js              # 背景元素
 │   │
 │   ├── ui/
-│   │   ├── DialogBox.js               # 对话框
+│   │   ├── DialogBox.js               # 对话框（半透明设计）
 │   │   ├── InputBox.js                # 输入框
 │   │   └── Typewriter.js              # 打字机效果
 │   │
@@ -356,11 +368,11 @@ frontend/
 #### 消息格式
 ```json
 {
-  "type": "message_type",
-  "requestId": "uuid",
-  "tenantId": "tenant_001",
-  "timestamp": 1718457600000,
-  "payload": { ... }
+"type": "message_type",
+"requestId": "uuid",
+"tenantId": "tenant_001",
+"timestamp": 1718457600000,
+"payload": { ... }
 }
 ```
 
@@ -369,37 +381,37 @@ frontend/
 **1. 连接确认 (CONNECTION)**
 ```json
 {
-  "type": "CONNECTION",
-  "requestId": "req_001",
-  "tenantId": "tenant_001",
-  "payload": {
+"type": "CONNECTION",
+"requestId": "req_001",
+"tenantId": "tenant_001",
+"payload": {
     "playerId": "player_123",
     "nickname": "玩家小明",
     "deviceId": "device_xyz"
-  }
+}
 }
 ```
 
 **2. 玩家消息 (CHAT_MESSAGE)**
 ```json
 {
-  "type": "CHAT_MESSAGE",
-  "requestId": "req_002",
-  "tenantId": "tenant_001",
-  "payload": {
+"type": "CHAT_MESSAGE",
+"requestId": "req_002",
+"tenantId": "tenant_001",
+"payload": {
     "message": "这个游戏怎么玩？",
     "playerId": "player_123"
-  }
+}
 }
 ```
 
 **3. 心跳 (PING)**
 ```json
 {
-  "type": "PING",
-  "requestId": "req_003",
-  "tenantId": "tenant_001",
-  "payload": {}
+"type": "PING",
+"requestId": "req_003",
+"tenantId": "tenant_001",
+"payload": {}
 }
 ```
 
@@ -408,55 +420,56 @@ frontend/
 **1. 欢迎消息 (WELCOME)**
 ```json
 {
-  "type": "WELCOME",
-  "requestId": "req_001",
-  "tenantId": "tenant_001",
-  "payload": {
+"type": "WELCOME",
+"requestId": "req_001",
+"tenantId": "tenant_001",
+"payload": {
     "guideName": "小荷",
     "message": "欢迎来到江南水乡！我是导游小荷，请问有什么可以帮助你的？",
     "isFirstVisit": true,
-    "tips": ["点击输入框与小荷对话", "可以问我关于游戏的问题"]
-  }
+    "tips": ["点击输入框与小荷对话", "可以问我关于游戏的问题"],
+    "playerId": "player_abc123"  // 后端生成的玩家ID
+}
 }
 ```
 
 **2. NPC回复 (NPC_REPLY)**
 ```json
 {
-  "type": "NPC_REPLY",
-  "requestId": "req_002",
-  "tenantId": "tenant_001",
-  "payload": {
+"type": "NPC_REPLY",
+"requestId": "req_002",
+"tenantId": "tenant_001",
+"payload": {
     "guideName": "小荷",
     "message": "你可以通过键盘WASD或方向键控制角色移动...",
     "emotion": "happy",
     "actions": ["show_tips", "highlight_controls"]
-  }
+}
 }
 ```
 
 **3. 错误消息 (ERROR)**
 ```json
 {
-  "type": "ERROR",
-  "requestId": "req_002",
-  "tenantId": "tenant_001",
-  "payload": {
-    "code": "RATE_LIMIT_EXCEEDED",
-    "message": "请求过于频繁，请稍后再试"
-  }
+"type": "ERROR",
+"requestId": "req_002",
+"tenantId": "tenant_001",
+"payload": {
+    "code": "PLAYER_NOT_FOUND",
+    "message": "玩家信息不存在，请刷新页面重试。"
+}
 }
 ```
 
 **4. 心跳响应 (PONG)**
 ```json
 {
-  "type": "PONG",
-  "requestId": "req_003",
-  "tenantId": "tenant_001",
-  "payload": {
+"type": "PONG",
+"requestId": "req_003",
+"tenantId": "tenant_001",
+"payload": {
     "serverTime": 1718457601000
-  }
+}
 }
 ```
 
@@ -479,20 +492,20 @@ Response: Prometheus metrics text format
 GET /api/v1/audit?tenantId={tenantId}&startDate={date}&endDate={date}&page={page}
 Response:
 {
-  "total": 100,
-  "page": 1,
-  "pageSize": 20,
-  "logs": [
+"total": 100,
+"page": 1,
+"pageSize": 20,
+"logs": [
     {
-      "id": "log_001",
-      "playerId": "player_123",
-      "message": "游戏怎么玩",
-      "response": "你可以通过...",
-      "timestamp": "2024-06-16T10:00:00Z",
-      "emotion": "neutral",
-      "cost": 0.001
+    "id": "log_001",
+    "playerId": "player_123",
+    "message": "游戏怎么玩",
+    "response": "你可以通过...",
+    "timestamp": "2024-06-16T10:00:00Z",
+    "emotion": "neutral",
+    "cost": 0.001
     }
-  ]
+]
 }
 ```
 
@@ -500,7 +513,7 @@ Response:
 
 ## 四、数据模型
 
-### 4.1 PostgreSQL 表结构
+### 4.1 MySQL 表结构
 
 **players 表**
 ```sql
@@ -509,13 +522,13 @@ CREATE TABLE players (
     tenant_id VARCHAR(32) NOT NULL,
     nickname VARCHAR(64) NOT NULL,
     device_id VARCHAR(128),
-    first_visit_time TIMESTAMP NOT NULL DEFAULT NOW(),
-    last_visit_time TIMESTAMP NOT NULL DEFAULT NOW(),
-    total_dialogues INT NOT NULL DEFAULT 0,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    INDEX idx_tenant (tenant_id),
-    INDEX idx_device (device_id)
+    first_visit_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    last_visit_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    total_dialogues BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    INDEX idx_players_tenant_id (tenant_id),
+    INDEX idx_players_device_id (device_id)
 );
 ```
 
@@ -529,16 +542,16 @@ CREATE TABLE conversations (
     user_message TEXT NOT NULL,
     ai_message TEXT NOT NULL,
     emotion VARCHAR(16),
-    tools_used JSONB,
+    tools_used JSON,
     llm_model VARCHAR(32),
     llm_tokens INT,
     cost DECIMAL(10,6),
     cache_hit BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    INDEX idx_player (player_id),
-    INDEX idx_session (session_id),
-    INDEX idx_tenant (tenant_id),
-    INDEX idx_created (created_at)
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX idx_conversations_player_id (player_id),
+    INDEX idx_conversations_session_id (session_id),
+    INDEX idx_conversations_tenant_id (tenant_id),
+    INDEX idx_conversations_created_at (created_at)
 );
 ```
 
@@ -549,15 +562,15 @@ CREATE TABLE audit_logs (
     player_id VARCHAR(64),
     tenant_id VARCHAR(32) NOT NULL,
     action VARCHAR(32) NOT NULL,
-    request_payload JSONB,
-    response_payload JSONB,
+    request_payload JSON,
+    response_payload JSON,
     error_message TEXT,
     status VARCHAR(16) NOT NULL,
     latency_ms INT,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    INDEX idx_tenant (tenant_id),
-    INDEX idx_action (action),
-    INDEX idx_created (created_at)
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX idx_audit_logs_tenant_id (tenant_id),
+    INDEX idx_audit_logs_action (action),
+    INDEX idx_audit_logs_created_at (created_at)
 );
 ```
 
@@ -587,16 +600,21 @@ type Message struct {
 }
 ```
 
-**缓存条目结构**
+**多模型适配器状态**
 ```go
-type CacheEntry struct {
-    Key        string
-    Question   string
-    Answer     string
-    Embedding  []float32
-    Similarity float32
-    TTL        time.Duration
-    CreatedAt  time.Time
+type MultiModelAdapter struct {
+    models     []*ModelInstance  // 模型实例列表
+    currentIdx int               // 当前使用的模型索引
+    autoSwitch bool              // 是否自动切换
+    mu         sync.RWMutex
+}
+
+type ModelInstance struct {
+    config    ModelConfig
+    adapter   LLMAdapter
+    failed    bool        // 模型是否失败
+    failedAt  time.Time   // 失败时间
+    failCount int         // 失败次数
 }
 ```
 
@@ -609,20 +627,27 @@ type CacheEntry struct {
 - 实现心跳机制 (30s 间隔)
 - 租户隔离的连接池
 - 消息路由到不同处理器
+- 玩家自动创建（首次访问时）
 
 ### 5.2 Agent Runtime
 - **总超时 30s** (可通过配置调整)
 - 消息路由: 确定请求类型 (welcome | chat)
 - 工具调用: 并行执行超时控制 (5s)
-- LLM 调用: 带重试和超时 (10s)
+- LLM 调用: 多模型适配器（自动切换）
 - 摘要压缩: 历史消息超过 10 条时压缩
 
-### 5.3 Memory (记忆)
+### 5.3 Multi-Model Adapter (多模型适配器)
+- **配置列表**: 支持多个模型配置
+- **自动切换**: 失败时自动切换到下一个模型
+- **失败标记**: 连续失败超过阈值标记为不可用
+- **状态恢复**: 定期检测恢复失败模型
+
+### 5.4 Memory (记忆)
 - 玩家基本信息 (nickname, first_visit)
 - 对话历史 (滚动窗口 + 摘要)
 - 可选 Redis 持久化
 
-### 5.4 Tool Registry
+### 5.5 Tool Registry
 工具接口定义:
 ```go
 type Tool interface {
@@ -639,17 +664,17 @@ type Tool interface {
 3. `detect_emotion`: 检测情绪
 4. `get_quest_info`: 获取任务信息
 
-### 5.5 熔断器
+### 5.6 熔断器
 - 状态: Closed | Open | Half-Open
 - 阈值: 5 次失败 / 30s 窗口
 - 开启后调用备用模型
 
-### 5.6 成本优化
+### 5.7 成本优化
 - **相似问题缓存**: 使用 Embedding 相似度 > 0.95
 - **历史摘要**: 超过 10 条历史消息时压缩
 - **调用统计**: Prometheus 指标
 
-### 5.7 资源隔离
+### 5.8 资源隔离
 - 每个 tenant_id 独立的 goroutine pool
 - pool 大小: `max(10, min(100, tenant_player_count))`
 - 防止大租户抢占资源
@@ -671,7 +696,7 @@ WaterTownScene (主场景)
 │   ├── Player (玩家)
 │   └── Boat (乌篷船)
 └── UIOverlay (UI层)
-    ├── DialogBox (对话框)
+    ├── DialogBox (对话框 - 半透明)
     ├── InputBox (输入框)
     └── Typewriter (打字机效果)
 ```
@@ -681,17 +706,20 @@ WaterTownScene (主场景)
 - 4 方向动画 (idle, walk)
 - 呼吸动画效果
 - 对话时朝向玩家
+- 情绪状态展示
 
 ### 6.3 对话系统
 - 打字机效果输出文本
 - 支持多行消息
 - 情绪表情 (happy, confused, angry)
 - 显示 NPC 名字
+- 半透明背景面板
 
 ### 6.4 WebSocket 集成
 - 自动重连机制
 - 消息队列 (断线重连后发送)
 - 心跳保活
+- 玩家 ID 同步
 
 ---
 
@@ -700,33 +728,33 @@ WaterTownScene (主场景)
 ### game_faq.json
 ```json
 {
-  "categories": [
+"categories": [
     {
-      "name": "基础操作",
-      "questions": [
+    "name": "基础操作",
+    "questions": [
         {
-          "q": "游戏怎么玩？",
-          "a": "你可以通过键盘WASD或方向键控制角色移动...",
-          "tags": ["操作", "新手"]
+        "q": "游戏怎么玩？",
+        "a": "你可以通过键盘WASD或方向键控制角色移动...",
+        "tags": ["操作", "新手"]
         },
         {
-          "q": "怎么赚钱？",
-          "a": "完成任务、参与活动、出售物品都可以赚取金币...",
-          "tags": ["经济", "任务"]
+        "q": "怎么赚钱？",
+        "a": "完成任务、参与活动、出售物品都可以赚取金币...",
+        "tags": ["经济", "任务"]
         }
-      ]
+    ]
     },
     {
-      "name": "任务系统",
-      "questions": [
+    "name": "任务系统",
+    "questions": [
         {
-          "q": "有什么任务？",
-          "a": "目前有主线任务、支线任务和日常任务...",
-          "tags": ["任务", "玩法"]
+        "q": "有什么任务？",
+        "a": "目前有主线任务、支线任务和日常任务...",
+        "tags": ["任务", "玩法"]
         }
-      ]
+    ]
     }
-  ]
+]
 }
 ```
 
@@ -738,85 +766,87 @@ WaterTownScene (主场景)
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:16-alpine
+mysql:
+    image: mysql:8.0
     environment:
-      POSTGRES_DB: water_town
-      POSTGRES_USER: water_town
-      POSTGRES_PASSWORD: password123
+    MYSQL_DATABASE: water_town
+    MYSQL_USER: water_town
+    MYSQL_PASSWORD: password123
+    MYSQL_ROOT_PASSWORD: root123
     ports:
-      - "5432:5432"
+    - "3306:3306"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/data/migrations:/docker-entrypoint-initdb.d
+    - mysql_data:/var/lib/mysql
+    - ./backend/data/migrations:/docker-entrypoint-initdb.d
 
-  backend:
+backend:
     build: ./backend
     ports:
-      - "8080:8080"
+    - "8080:8080"
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: water_town
-      DB_USER: water_town
-      DB_PASS: password123
-      LLM_API_KEY: ${GLM_API_KEY}
+    DB_HOST: mysql
+    DB_PORT: 3306
+    DB_NAME: water_town
+    DB_USER: water_town
+    DB_PASSWORD: password123
+    GLM_API_KEY: ${GLM_API_KEY}
     depends_on:
-      - postgres
+    - mysql
     volumes:
-      - ./backend/data:/app/data
+    - ./backend/data:/app/data
 
-  frontend:
+frontend:
     build: ./frontend
     ports:
-      - "3000:80"
+    - "8084:80"
     depends_on:
-      - backend
+    - backend
 
 volumes:
-  postgres_data:
+mysql_data:
 ```
 
 ---
 
 ## 九、实施计划
 
-### 阶段 1: 项目初始化
-- [ ] 创建项目目录结构
-- [ ] 初始化 go.mod 和 package.json
-- [ ] 配置 Docker Compose
-- [ ] 创建 PostgreSQL 初始化脚本
+### 阶段 1: 项目初始化 ✅
+- [x] 创建项目目录结构
+- [x] 初始化 go.mod 和 package.json
+- [x] 配置 Docker Compose
+- [x] 创建 MySQL 初始化脚本
 
-### 阶段 2: 后端核心
-- [ ] 实现配置管理
-- [ ] 实现数据库连接和模型
-- [ ] 实现 WebSocket Handler
-- [ ] 实现 Agent Runtime (不含 LLM)
-- [ ] 实现 Tool Registry
-- [ ] 实现熔断器
-- [ ] 实现成本优化器
-- [ ] 实现 LLM Adapter (GLM-4.7)
+### 阶段 2: 后端核心 ✅
+- [x] 实现配置管理（支持多模型）
+- [x] 实现 MySQL 数据库连接和模型
+- [x] 实现 WebSocket Handler
+- [x] 实现 Agent Runtime
+- [x] 实现 Tool Registry
+- [x] 实现熔断器
+- [x] 实现成本优化器
+- [x] 实现多模型适配器（Multi-Model Adapter）
 
-### 阶段 3: 前端核心
-- [ ] 创建 Phaser 项目基础
-- [ ] 实现水乡场景 (背景)
-- [ ] 实现 NPC 导游角色
-- [ ] 实现对话框 UI
-- [ ] 实现输入框 UI
-- [ ] 实现 WebSocket 客户端
-- [ ] 实现消息处理和打字机效果
+### 阶段 3: 前端核心 ✅
+- [x] 创建 Phaser 项目基础
+- [x] 实现水乡场景（背景）
+- [x] 实现 NPC 导游角色
+- [x] 实现对话框 UI（半透明设计）
+- [x] 实现输入框 UI
+- [x] 实现 WebSocket 客户端
+- [x] 实现消息处理和打字机效果
 
-### 阶段 4: 集成测试
-- [ ] 端到端 WebSocket 通信测试
-- [ ] Agent 对话流程测试
-- [ ] 熔断器降级测试
-- [ ] 缓存命中测试
-- [ ] 租户隔离测试
+### 阶段 4: 集成测试 ✅
+- [x] 端到端 WebSocket 通信测试
+- [x] Agent 对话流程测试
+- [x] 多模型切换测试
+- [x] 缓存命中测试
+- [x] 玩家自动创建测试
 
-### 阶段 5: 文档
-- [ ] README 运行指南
-- [ ] API 文档
-- [ ] 部署说明
+### 阶段 5: 文档 ✅
+- [x] README 运行指南
+- [x] API 文档
+- [x] 部署说明
+- [x] 多模型配置说明
 
 ---
 
@@ -829,17 +859,23 @@ docker-compose up -d
 
 # 检查服务健康
 curl http://localhost:8080/health
-curl http://localhost:3000
+curl http://localhost:8084
 ```
 
 ### 功能验证
-1. 打开浏览器访问 http://localhost:3000
-2. 验证场景加载正确 (桥、水、路)
+1. 打开浏览器访问 http://localhost:8084
+2. 验证场景加载正确（桥、水、路）
 3. 验证 NPC 少女出现
 4. 发送欢迎消息,验证 NPC 自动问候
 5. 输入 "游戏怎么玩",验证回答正确
 6. 输入相同问题第二次,验证缓存命中
 7. 检查数据库中审计日志记录
+
+### 多模型切换验证
+1. 配置多个模型
+2. 模拟主模型失败（如余额不足）
+3. 验证自动切换到备用模型
+4. 检查日志中的模型切换记录
 
 ### 性能验证
 ```bash
@@ -860,22 +896,25 @@ curl "http://localhost:8080/api/v1/audit?tenantId=tenant_001"
 - `internal/agent/runtime.go` - Agent运行时
 - `internal/agent/session.go` - 会话管理
 - `internal/agent/tools.go` - 工具注册表
-- `internal/llm/glm_adapter.go` - LLM适配器
+- `internal/llm/multi_model_adapter.go` - 多模型适配器（核心）
+- `internal/llm/glm_adapter.go` - GLM适配器
 - `internal/llm/circuit_breaker.go` - 熔断器
 - `internal/cost/optimizer.go` - 成本优化器
 - `internal/database/models.go` - 数据模型
 - `data/knowledge/game_faq.json` - 知识库
+- `MODEL_CONFIG.md` - 多模型配置说明
 
 ### 前端核心文件
 - `js/main.js` - 主入口
 - `js/scenes/WaterTownScene.js` - 主场景
 - `js/entities/NPCGuide.js` - NPC角色
-- `js/ui/DialogBox.js` - 对话框
+- `js/ui/DialogBox.js` - 对话框（半透明）
 - `js/network/WebSocketClient.js` - WebSocket客户端
+- `css/styles.css` - 全局样式
 
 ### 配置文件
 - `docker-compose.yml` - 容器编排
-- `backend/configs/config.yaml` - 后端配置
+- `backend/configs/config.yaml` - 后端配置（含多模型）
 - `backend/data/migrations/init.sql` - 数据库初始化
 - `frontend/package.json` - 前端依赖
 - `backend/go.mod` - Go依赖

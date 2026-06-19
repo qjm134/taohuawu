@@ -1,84 +1,274 @@
 # 江南水乡智能导游系统 - 后端
 
-基于 Go + Gin + WebSocket + GLM-4.7 的智能导游后端服务。
+基于 Go + Gin + WebSocket + LLM 的智能导游后端服务，支持**多模型路由**、**策略化调度**和**企业级容错**。
 
 ## 技术栈
 
-- **Go 1.22** - 编程语言
-- **Gin** - HTTP 框架
-- **Gorilla WebSocket** - WebSocket 支持
-- **MySQL** - 数据库
-- **GLM-4.7** - 大语言模型
-- **Prometheus** - 指标监控
+- **Go 1.25** — 编程语言
+- **Gin** — HTTP 框架
+- **Gorilla WebSocket** — WebSocket 支持
+- **MySQL 8.0** — 数据库
+- **Claude (anthropic-sdk-go)** / **OpenAI (go-openai)** — 原生 SDK 对接
+- **Prometheus** — 指标监控
+- **OpenTelemetry** — 分布式追踪
 
 ## 项目结构
 
 ```
 backend/
-├── cmd/server/          # 程序入口
+├── cmd/server/              # 程序入口
 ├── internal/
-│   ├── config/          # 配置管理
-│   ├── server/          # HTTP 服务器
-│   ├── websocket/       # WebSocket 处理
-│   ├── agent/           # Agent 运行时
-│   ├── llm/             # LLM 适配器
-│   ├── cost/            # 成本优化
-│   ├── emotion/         # 情绪检测
-│   ├── database/        # 数据库层
-│   ├── knowledge/       # 知识库
-│   └── observability/   # 可观测性
-├── pkg/                 # 工具包
-├── data/
-│   ├── knowledge/       # 知识库文件
-│   └── migrations/      # 数据库迁移
-└── configs/             # 配置文件
+│   ├── config/              # 配置管理
+│   ├── server/              # HTTP 服务器
+│   ├── websocket/           # WebSocket 处理
+│   ├── agent/               # Agent 运行时
+│   ├── llm/                 # ★ 多模型路由系统
+│   │   ├── adapter.go          # Adapter 接口（兼容层）
+│   │   ├── multi_model_adapter.go  # 桥接新系统到旧接口
+│   │   ├── model/              # ★ 统一数据层
+│   │   │   ├── provider.go       # Provider 接口定义
+│   │   │   ├── request.go        # ChatRequest / Tool / ToolCall
+│   │   │   ├── response.go       # ChatResponse / StreamChunk
+│   │   │   ├── stats.go          # ModelStats（EMA 延迟/错误率）
+│   │   │   └── classify.go       # 任务分类器
+│   │   ├── providers/          # ★ Provider 实现层
+│   │   │   ├── claude/claude.go  # Claude (anthropic-sdk-go)
+│   │   │   └── openai/openai.go  # OpenAI (go-openai)
+│   │   └── router/router.go    # ★ 路由器（6 种策略）
+│   ├── cost/                # 成本优化
+│   ├── emotion/             # 情绪检测
+│   ├── database/            # 数据库层
+│   ├── knowledge/           # 知识库
+│   └── observability/       # 可观测性
+├── pkg/                     # 工具包
+├── examples/                # 使用示例
+├── docs/                    # 详细文档
+│   └── MULTI_MODEL_ROUTER.md
+├── configs/                 # 配置文件
+├── MODEL_CONFIG.md          # 多模型配置说明
+└── README.md                # 本文档
+```
+
+## 核心架构
+
+```
+┌──────────────────────────────────────────────────┐
+│         Application (agent.Runtime)               │
+└────────────────────────┬─────────────────────────┘
+                         │ llm.Adapter 接口（兼容）
+                         ▼
+              ┌──────────────────────┐
+              │   RouterAdapter      │ ← 桥接层
+              └──────────┬───────────┘
+                         │ model.ChatRequest
+                         ▼
+              ┌──────────────────────┐
+              │      Router          │ ← 策略引擎
+              │ ┌──────────────────┐ │
+              │ │ Fixed / Cost /   │ │
+              │ │ Latency /        │ │
+              │ │ Capability /     │ │
+              │ │ Fallback /       │ │
+              │ │ Weighted         │ │
+              │ └──────────────────┘ │
+              │ ┌──────────────────┐ │
+              │ │ ModelStats (EMA) │ │
+              │ └──────────────────┘ │
+              └──────────┬───────────┘
+                         │
+              ┌──────────┴──────────┐
+              ▼                     ▼
+   ┌─────────────────┐  ┌─────────────────┐
+   │ Claude Provider  │  │ OpenAI Provider  │
+   │ (anthropic-sdk)  │  │  (go-openai)     │
+   └─────────────────┘  └─────────────────┘
 ```
 
 ## 快速开始
 
 ### 环境要求
 
-- Go 1.22+
+- Go 1.25+
 - MySQL 8.0+
-- GLM-4.7 API Key
-
-备注：
-   测试时需要在数据库里创建数据库，表会自动创建
-   线上项目已经配置了 Docker Compose，会自动创建数据库
+- 至少一个 LLM API Key（Claude / OpenAI / 兼容 OpenAI 格式的 API）
 
 ### 配置
 
-1. 复制环境变量示例：
-```bash
-cp .env.example .env
-```
+1. 编辑 `configs/config.yaml`：
+   - 配置数据库连接
+   - 配置模型列表
+   - 设置 API Key（推荐环境变量）
 
-2. 编辑 `.env` 文件，设置你的 GLM API Key：
-```
-GLM_API_KEY=your_api_key_here
+2. 设置环境变量：
+```bash
+# Claude
+export ANTHROPIC_API_KEY="your-anthropic-key"
+
+# OpenAI
+export OPENAI_API_KEY="your-openai-key"
+
+# 兼容 OpenAI 格式的 API（GLM、通义千问等）
+export COMPAT_API_KEY="your-compat-key"
 ```
 
 ### 运行
 
-1. 安装依赖：
 ```bash
 go mod download
-```
-
-2. 运行服务：
-```bash
 go run cmd/server/main.go
 ```
 
 服务将在 `http://localhost:8080` 启动。
 
-### Docker 运行
+## 多模型路由（核心亮点）
 
-```bash
-cd backend
-docker build -t watertown-backend .
-docker run -p 8080:8080 -e GLM_API_KEY=your_key watertown-backend
+### 路由策略
+
+系统支持 6 种路由策略，可根据场景灵活切换：
+
+| 策略 | 说明 | 适用场景 |
+|------|------|---------|
+| **Fixed** | 固定使用指定模型 | 开发调试 |
+| **Cost** | 选择成本最低的模型 | 成本控制 |
+| **Latency** | 选择延迟最低的模型（EMA 跟踪） | 实时对话 |
+| **Capability** | 根据任务类型选模型 | 混合场景 |
+| **Fallback** | 按降级链依次尝试 | **生产推荐** |
+| **Weighted** | 按权重随机选择 | A/B 测试 |
+
+### 降级链
+
 ```
+主模型（Claude Sonnet） → 通用备选（OpenAI GPT-4o） → 低成本兜底（Haiku/GPT-4o-mini）
+```
+
+**关键设计**：降级链容忍更高错误率，确保可用性优先于成本。
+
+### EMA（指数移动平均）统计
+
+```
+// 新样本权重 30%，历史权重 70%，平滑异常波动
+newEMA = 0.3 × currentSample + 0.7 × previousEMA
+```
+
+Router 用 EMA 平滑跟踪每个 provider 的延迟和错误率，避免单次异常影响路由决策。
+
+### 任务分类
+
+根据消息内容自动识别任务类型，匹配最适合的模型：
+
+```
+Code (代码) > Reasoning (推理) > Chinese (中文) > LongText (长文本) > General (通用)
+```
+
+**Token 估算**：每 4 字符约 1 token，中文按字节估算。
+
+## 核心特性
+
+### 1. 多 Provider 支持
+
+- **Claude** — 使用 `anthropic-sdk-go` 原生 SDK
+- **OpenAI** — 使用 `go-openai` 原生 SDK
+- **兼容格式** — GLM、通义千问、DeepSeek 等支持 OpenAI 格式的 API
+- 所有 Provider 均支持：普通 Chat / 流式 Chat / Tool Calling
+
+### 2. 智能路由
+
+- 6 种路由策略按需切换
+- EMA 延迟和错误率跟踪
+- 任务分类 → 模型能力映射
+- 自动降级链
+
+### 3. 成本优化
+
+- 相似问题缓存
+- 历史消息摘要
+- Token 使用统计
+- 成本估算（每个 Provider 可配置输入/输出单价）
+
+### 4. 高可用
+
+- 熔断器机制
+- 多 Provider 降级链
+- 自动重试
+- 兜底适配器（FallbackAdapter）
+
+### 5. 多租户
+
+- 租户隔离
+- 独立资源池
+- 审计日志
+
+## 配置示例
+
+### 基础配置（兼容旧模式）
+
+```yaml
+llm:
+  models:
+    - name: claude-sonnet-4-20250514
+      base_url: ""
+      api_key: ${ANTHROPIC_API_KEY}
+      enabled: true
+      max_tokens: 2000
+      temperature: 0.7
+
+    - name: gpt-4o
+      base_url: ""
+      api_key: ${OPENAI_API_KEY}
+      enabled: true
+      max_tokens: 2000
+      temperature: 0.7
+
+    - name: glm-4-flash
+      base_url: https://open.bigmodel.cn/api/paas/v4/chat/completions
+      api_key: ${GLM_API_KEY}
+      enabled: true
+      max_tokens: 300
+      temperature: 0.7
+
+  timeout: 10s
+  max_retries: 3
+  retry_delay: 1s
+  auto_switch: true  # 启用降级链自动切换
+```
+
+系统会根据模型名称自动推断 Provider 类型：
+- 名称含 `claude` → Claude Provider
+- 名称含 `gpt`/`o1`/`o3` → OpenAI Provider
+- 其他 → OpenAI 兼容模式（GLM、Qwen 等均支持）
+
+### 高级配置（代码级）
+
+```go
+multiRouter := llm.NewMultiModelRouter()
+
+// 添加 Providers
+claudeProvider, _ := claude.NewProvider(claude.Config{
+    APIKey:      os.Getenv("ANTHROPIC_API_KEY"),
+    Model:       "claude-sonnet-4-20250514",
+    InputPrice:  0.000003,  // $3 per 1M tokens
+    OutputPrice: 0.000015,
+})
+multiRouter.AddProvider(claudeProvider, true)
+
+// 设置路由策略
+multiRouter.SetStrategy(router.StrategyFallback)
+multiRouter.SetFallbackChain([]string{"claude", "openai"})
+
+// 能力映射：不同任务用不同模型
+multiRouter.SetCapabilityMap(model.TaskTypeCode, []string{"claude"})
+multiRouter.SetCapabilityMap(model.TaskTypeChinese, []string{"openai"})
+
+// 获取适配器
+adapter := multiRouter.GetAdapter()
+```
+
+详细示例见 [`examples/multi_model_example.go`](examples/multi_model_example.go)。
+
+## 详细文档
+
+- [多模型路由系统](docs/MULTI_MODEL_ROUTER.md) — 完整架构说明
+- [多模型配置](MODEL_CONFIG.md) — 配置参数详解
 
 ## API 文档
 
@@ -99,72 +289,51 @@ docker run -p 8080:8080 -e GLM_API_KEY=your_key watertown-backend
 
 ### REST API
 
-**健康检查**
 ```
-GET /health
+GET /health              # 健康检查
+GET /metrics             # Prometheus 指标
+GET /api/v1/audit        # 审计日志
 ```
-
-**获取指标**
-```
-GET /metrics
-```
-
-**获取审计日志**
-```
-GET /api/v1/audit?tenantId={tenantId}&page={page}
-```
-
-## 核心特性
-
-### 1. 智能对话
-- 基于 GLM-4.7 的自然语言理解
-- 上下文记忆和会话管理
-- 情绪感知和语气调整
-
-### 2. 成本优化
-- 相似问题缓存
-- 历史消息摘要
-- Token 使用统计
-
-### 3. 高可用
-- 熔断器机制
-- 备用模型降级
-- 自动重试
-
-### 4. 多租户
-- 租户隔离
-- 独立资源池
-- 审计日志
 
 ## 开发
 
-### 添加新工具
+### 添加新 Provider
 
-在 `internal/agent/tools.go` 中添加新的工具：
+实现 `model.Provider` 接口即可：
+
+```go
+type Provider interface {
+    Name() string
+    AvailableModels() []string
+    Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+    StreamChat(ctx context.Context, req *ChatRequest) (<-chan StreamChunk, error)
+    InputPricePer1K() float64
+    OutputPricePer1K() float64
+    MaxContextLength() int
+}
+```
+
+### 添加新工具
 
 ```go
 type MyTool struct{}
 
-func (t *MyTool) Name() string {
-    return "my_tool"
-}
-
-func (t *MyTool) Description() string {
-    return "工具描述"
-}
-
-func (t *MyTool) Timeout() time.Duration {
-    return 5 * time.Second
-}
+func (t *MyTool) Name() string     { return "my_tool" }
+func (t *MyTool) Description() string { return "工具描述" }
+func (t *MyTool) Timeout() time.Duration { return 5 * time.Second }
 
 func (t *MyTool) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-    // 实现工具逻辑
     return result, nil
 }
-
-// 在 NewToolRegistry 中注册
-registry.Register(&MyTool{})
 ```
+
+## 依赖
+
+核心第三方依赖（仅 2 个 SDK）：
+- `github.com/anthropics/anthropic-sdk-go` — Claude 原生 SDK
+- `github.com/sashabaranov/go-openai` — OpenAI 原生 SDK
+
+**不使用 LangChain**，以标准库为主，保持轻量。
 
 ## 许可证
 

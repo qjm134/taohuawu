@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/watertown/guide/pkg/logging"
 	"github.com/watertown/guide/pkg/utils"
 )
 
@@ -22,10 +23,11 @@ type GLMAdapter struct {
 	maxRetries int
 	retryDelay time.Duration
 	circuit    *CircuitBreaker
+	logger     logging.Logger
 }
 
 // NewGLMAdapter 创建 GLM 适配器
-func NewGLMAdapter(apiKey, baseURL, model string, timeout time.Duration) *GLMAdapter {
+func NewGLMAdapter(apiKey, baseURL, model string, timeout time.Duration, logger logging.Logger) *GLMAdapter {
 	return &GLMAdapter{
 		apiKey:     apiKey,
 		baseURL:    baseURL,
@@ -35,6 +37,7 @@ func NewGLMAdapter(apiKey, baseURL, model string, timeout time.Duration) *GLMAda
 		maxRetries: 3,
 		retryDelay: 1 * time.Second,
 		circuit:    NewCircuitBreaker(5, 30*time.Second, 60*time.Second),
+		logger:     logger,
 	}
 }
 

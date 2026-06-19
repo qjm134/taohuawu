@@ -87,11 +87,22 @@ func (h *FileHook) Levels() []logrus.Level {
 }
 
 func (h *FileHook) Fire(entry *logrus.Entry) error {
-	msg := []byte(fmt.Sprintf("[%s] [%s] %s\n",
+	// 构建消息，包含 Message 和 Data 中的键值对
+	msg := fmt.Sprintf("[%s] [%s] %s",
 		entry.Time.Format("2006-01-02 15:04:05"),
 		entry.Level.String(),
-		entry.Message))
-	if _, err := h.fileHook.Write(msg); err != nil {
+		entry.Message)
+
+	// 添加键值对
+	if len(entry.Data) > 0 {
+		msg += " | "
+		for key, value := range entry.Data {
+			msg += fmt.Sprintf("%s=%v ", key, value)
+		}
+	}
+	msg += "\n"
+
+	if _, err := h.fileHook.Write([]byte(msg)); err != nil {
 		return err
 	}
 	return nil

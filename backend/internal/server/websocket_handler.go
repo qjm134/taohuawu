@@ -67,12 +67,16 @@ func (h *WebSocketHandler) Handle(c *gin.Context) {
 
 // handleMessage 处理消息
 func (h *WebSocketHandler) handleMessage(client *websocket.Client, message []byte) {
+	h.logger.Info("Received raw message", "length", len(message), "preview", string(message[:min(len(message), 200)]))
+
 	// 解析消息
 	var msg websocket.Message
 	if err := json.Unmarshal(message, &msg); err != nil {
 		h.logger.Error("Failed to parse message", "error", err)
 		return
 	}
+
+	h.logger.Info("Parsed message", "type", msg.Type, "requestId", msg.RequestID, "tenantId", msg.TenantID)
 
 	switch msg.Type {
 	case websocket.MessageTypeConnection:
@@ -88,11 +92,15 @@ func (h *WebSocketHandler) handleMessage(client *websocket.Client, message []byt
 
 // handleConnection 处理连接消息
 func (h *WebSocketHandler) handleConnection(client *websocket.Client, msg *websocket.Message) {
+	h.logger.Info("Handling connection", "requestId", msg.RequestID, "tenantId", msg.TenantID)
+
 	var payload websocket.ConnectionPayload
 	if err := msg.ParsePayload(&payload); err != nil {
 		h.logger.Error("Failed to parse connection payload", "error", err)
 		return
 	}
+
+	h.logger.Info("Connection payload parsed", "playerId", payload.PlayerID, "deviceId", payload.DeviceID, "nickname", payload.Nickname)
 
 	// 设置客户端信息
 	client.TenantID = msg.TenantID
@@ -101,6 +109,7 @@ func (h *WebSocketHandler) handleConnection(client *websocket.Client, msg *webso
 	// 查找或创建玩家
 	player, err := h.playerRepo.GetByDeviceID(payload.DeviceID, msg.TenantID)
 	if err != nil {
+		h.logger.Info("Player not found, creating new player", "deviceId", payload.DeviceID)
 		// 创建新玩家
 		player = &database.Player{
 			ID:             uuid.New().String(),
@@ -115,7 +124,9 @@ func (h *WebSocketHandler) handleConnection(client *websocket.Client, msg *webso
 			h.logger.Error("Failed to create player", "error", err)
 			return
 		}
+		h.logger.Info("Player created", "playerId", player.ID)
 	} else {
+		h.logger.Info("Player found", "playerId", player.ID, "nickname", player.Nickname)
 		// 更新最后访问时间
 		_ = h.playerRepo.UpdateLastVisit(player.ID)
 	}
@@ -124,18 +135,23 @@ func (h *WebSocketHandler) handleConnection(client *websocket.Client, msg *webso
 	session := h.runtime.GetSession(player.ID, msg.TenantID)
 	session.Nickname = payload.Nickname
 
+	h.logger.Info("Getting welcome message", "playerId", player.ID)
+
 	// 处理欢迎
 	reply, err := h.runtime.HandleWelcome(context.Background(), session)
 	if err != nil {
 		h.logger.Error("Failed to handle welcome", "error", err)
-		return
+		// 即使失败也发送欢迎消息
+		reply = "欢迎来到江南水乡！我是导游小荷，很高兴为你服务。"
 	}
+
+	h.logger.Info("Welcome message generated", "reply_length", len(reply))
 
 	// 标记已访问
 	h.runtime.MarkVisited(session.ID)
 
 	// 构建欢迎消息
-	welcomeMsg, _ := websocket.NewMessage(
+	welcomeMsg, err := websocket.NewMessage(
 		websocket.MessageTypeWelcome,
 		msg.RequestID,
 		msg.TenantID,
@@ -144,34 +160,101 @@ func (h *WebSocketHandler) handleConnection(client *websocket.Client, msg *webso
 			Message:      reply,
 			IsFirstVisit: session.IsFirstVisit,
 			Tips:         []string{"点击输入框与小荷对话", "可以问我关于游戏的问题"},
+			PlayerID:     player.ID, // 返回后端生成的玩家ID
 		},
 	)
+	if err != nil {
+		h.logger.Error("Failed to create welcome message", "error", err)
+		return
+	}
 
-	_ = client.SendMessage(welcomeMsg)
+	h.logger.Info("Sending welcome message", "playerId", player.ID, "isFirstVisit", session.IsFirstVisit)
+
+	if err := client.SendMessage(welcomeMsg); err != nil {
+		h.logger.Error("Failed to send welcome message", "error", err)
+		return
+	}
+
+	h.logger.Info("Welcome message sent successfully")
 }
 
 // handleChatMessage 处理聊天消息
 func (h *WebSocketHandler) handleChatMessage(client *websocket.Client, msg *websocket.Message) {
+	h.logger.Info("Handling chat message", "requestId", msg.RequestID)
+
 	var payload websocket.ChatMessagePayload
 	if err := msg.ParsePayload(&payload); err != nil {
 		h.logger.Error("Failed to parse chat payload", "error", err)
 		return
 	}
 
+	h.logger.Info("Chat payload parsed", "playerId", payload.PlayerID, "message", payload.Message)
+
 	// 查找玩家
 	player, err := h.playerRepo.GetByID(payload.PlayerID)
 	if err != nil {
-		h.logger.Error("Player not found", "player_id", payload.PlayerID)
-		return
+		h.logger.Warn("Player not found by ID, trying to find by deviceId", "player_id", payload.PlayerID)
+
+		// 尝试用 deviceId 查找
+		player, err = h.playerRepo.GetByDeviceID(client.ID, msg.TenantID)
+		if err != nil {
+			h.logger.Warn("Player not found by deviceId, creating new player", "deviceId", client.ID)
+
+			// 创建新玩家
+			player = &database.Player{
+				ID:             uuid.New().String(),
+				TenantID:       msg.TenantID,
+				Nickname:       "游客",
+				DeviceID:       client.ID,
+				FirstVisitTime: time.Now(),
+				LastVisitTime:  time.Now(),
+				TotalDialogues: 0,
+			}
+			if err := h.playerRepo.Create(player); err != nil {
+				h.logger.Error("Failed to create player", "error", err)
+				errMsg, _ := websocket.NewMessage(
+					websocket.MessageTypeError,
+					msg.RequestID,
+					msg.TenantID,
+					websocket.ErrorPayload{
+						Code:    "PLAYER_CREATE_ERROR",
+						Message: "无法创建玩家信息，请重试。",
+					},
+				)
+				_ = client.SendMessage(errMsg)
+				return
+			}
+
+			h.logger.Info("New player created", "playerId", player.ID)
+
+			// 发送欢迎消息给新玩家
+			welcomeMsg, _ := websocket.NewMessage(
+				websocket.MessageTypeWelcome,
+				msg.RequestID,
+				msg.TenantID,
+				websocket.WelcomePayload{
+					GuideName:    agent.GuideName,
+					Message:      "欢迎来到江南水乡！我是导游小荷，很高兴为你服务。",
+					IsFirstVisit: true,
+					Tips:         []string{"点击输入框与小荷对话", "可以问我关于游戏的问题"},
+					PlayerID:     player.ID,
+				},
+			)
+			_ = client.SendMessage(welcomeMsg)
+		}
 	}
+
+	h.logger.Info("Player found", "player_id", player.ID, "nickname", player.Nickname)
 
 	// 获取会话
 	session := h.runtime.GetSession(player.ID, msg.TenantID)
+	h.logger.Info("Session retrieved", "sessionId", session.ID)
 
 	// 处理聊天
+	h.logger.Info("Calling LLM for chat", "player_id", player.ID, "message", payload.Message)
 	reply, emotion, err := h.runtime.HandleChat(context.Background(), session, payload.Message)
 	if err != nil {
-		h.logger.Error("Failed to handle chat", "error", err)
+		h.logger.Error("Failed to handle chat", "error", err, "player_id", player.ID)
 
 		// 返回错误消息
 		errMsg, _ := websocket.NewMessage(
@@ -186,6 +269,8 @@ func (h *WebSocketHandler) handleChatMessage(client *websocket.Client, msg *webs
 		_ = client.SendMessage(errMsg)
 		return
 	}
+
+	h.logger.Info("Chat response received", "reply_length", len(reply), "emotion", emotion)
 
 	// 增加对话计数
 	_ = h.playerRepo.IncrementDialogues(player.ID)
@@ -216,6 +301,7 @@ func (h *WebSocketHandler) handleChatMessage(client *websocket.Client, msg *webs
 		},
 	)
 
+	h.logger.Info("Sending NPC reply", "message_length", len(reply))
 	_ = client.SendMessage(replyMsg)
 }
 

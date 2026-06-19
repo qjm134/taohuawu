@@ -9,26 +9,28 @@ import (
 	"github.com/watertown/guide/internal/cost"
 	"github.com/watertown/guide/internal/emotion"
 	"github.com/watertown/guide/internal/llm"
+	"github.com/watertown/guide/pkg/logging"
 	"github.com/watertown/guide/pkg/utils"
 )
 
 // Runtime Agent 运行时
 type Runtime struct {
-	llmAdapter     llm.Adapter
+	llmAdapter      llm.Adapter
 	fallbackAdapter llm.Adapter
-	toolRegistry   *ToolRegistry
-	sessionManager *SessionManager
-	optimizer      *cost.Optimizer
+	toolRegistry    *ToolRegistry
+	sessionManager  *SessionManager
+	optimizer       *cost.Optimizer
 	emotionDetector emotion.Detector
-	config         Config
+	config          Config
+	logger          logging.Logger
 }
 
 // Config Agent 配置
 type Config struct {
-	MaxRetries     int
-	Timeout        time.Duration
-	LLMTimeout     time.Duration
-	ToolTimeout    time.Duration
+	MaxRetries  int
+	Timeout     time.Duration
+	LLMTimeout  time.Duration
+	ToolTimeout time.Duration
 }
 
 // NewRuntime 创建运行时
@@ -39,6 +41,7 @@ func NewRuntime(
 	optimizer *cost.Optimizer,
 	emotionDetector emotion.Detector,
 	config Config,
+	logger logging.Logger,
 ) *Runtime {
 	return &Runtime{
 		llmAdapter:      llmAdapter,
@@ -48,16 +51,21 @@ func NewRuntime(
 		optimizer:       optimizer,
 		emotionDetector: emotionDetector,
 		config:          config,
+		logger:          logger,
 	}
 }
 
 // HandleWelcome 处理欢迎
 func (r *Runtime) HandleWelcome(ctx context.Context, session *Session) (string, error) {
+	// 总超时
 	ctx, cancel := utils.WithTimeoutFrom(ctx, r.config.Timeout)
 	defer cancel()
 
+	r.logger.Info("[HandleWelcome] Starting", "playerId", session.PlayerID)
+
 	// 检查缓存
 	if cached, hit := r.optimizer.GetCache("welcome_" + session.PlayerID); hit {
+		r.logger.Info("[HandleWelcome] Cache hit", "playerId", session.PlayerID)
 		return cached, nil
 	}
 
@@ -71,30 +79,37 @@ func (r *Runtime) HandleWelcome(ctx context.Context, session *Session) (string, 
 
 	req := &llm.LLMRequest{
 		Messages:    messages,
-		Model:       "glm-4",
+		Model:       "", // 留空，让路由根据策略自动选择模型
 		Temperature: 0.7,
 		MaxTokens:   200,
 	}
 
+	r.logger.Info("[HandleWelcome] LLM health check", "healthy", r.llmAdapter.IsHealthy())
+
 	var response *llm.LLMResponse
 	var err error
 
-	// 尝试主 LLM
+	// 尝试主 LLM（RouterAdapter 内部有降级链，会自动切换失败的 provider）
+	// 使用独立超时，确保给 fallback 留出时间
 	if r.llmAdapter.IsHealthy() {
-		ctx, cancel := utils.WithTimeoutFrom(ctx, r.config.LLMTimeout)
-		response, err = r.llmAdapter.Chat(ctx, req)
-		cancel()
+		r.logger.Info("[HandleWelcome] Calling primary LLM", "model", req.Model)
+		llmCtx, llmCancel := utils.WithTimeoutFrom(ctx, r.config.LLMTimeout)
+		response, err = r.llmAdapter.Chat(llmCtx, req)
+		llmCancel()
 
 		if err != nil {
-			// 降级到备用适配器
+			r.logger.Error("[HandleWelcome] Primary LLM failed", "error", err)
+			// 降级到兜底适配器，使用原始 ctx（不是已过期的 llmCtx）
+			r.logger.Info("[HandleWelcome] Trying fallback adapter")
 			response, err = r.fallbackAdapter.Chat(ctx, req)
 		}
 	} else {
-		// 使用兜底回复
+		r.logger.Info("[HandleWelcome] Primary LLM unhealthy, using fallback")
 		response, err = r.fallbackAdapter.Chat(ctx, req)
 	}
 
 	if err != nil {
+		r.logger.Error("[HandleWelcome] All LLM failed", "error", err)
 		return "", fmt.Errorf("failed to get response: %w", err)
 	}
 
@@ -110,15 +125,19 @@ func (r *Runtime) HandleWelcome(ctx context.Context, session *Session) (string, 
 
 // HandleChat 处理聊天
 func (r *Runtime) HandleChat(ctx context.Context, session *Session, message string) (string, string, error) {
+	r.logger.Info("[HandleChat] Start", "sessionId", session.ID, "message", message)
+
 	ctx, cancel := utils.WithTimeoutFrom(ctx, r.config.Timeout)
 	defer cancel()
 
 	// 检测情绪
 	em := r.emotionDetector.Detect(message)
 	emotionStr := string(em)
+	r.logger.Info("[HandleChat] Emotion detected", "emotion", emotionStr)
 
 	// 检查缓存
 	if cached, hit := r.optimizer.GetCache(message); hit {
+		r.logger.Info("[HandleChat] Cache hit", "cached_length", len(cached))
 		session.AddMessage("assistant", cached, emotionStr, nil)
 		return cached, emotionStr, nil
 	}
@@ -141,9 +160,11 @@ func (r *Runtime) HandleChat(ctx context.Context, session *Session, message stri
 		Content: message,
 	})
 
+	r.logger.Info("[HandleChat] Building LLM request", "message_count", len(messages))
+
 	req := &llm.LLMRequest{
 		Messages:    messages,
-		Model:       "glm-4",
+		Model:       "", // 留空，让路由根据策略自动选择模型
 		Temperature: 0.7,
 		MaxTokens:   300,
 	}
@@ -151,24 +172,32 @@ func (r *Runtime) HandleChat(ctx context.Context, session *Session, message stri
 	var response *llm.LLMResponse
 	var err error
 
-	// 尝试主 LLM
+	// 尝试主 LLM，使用独立超时确保给 fallback 留出时间
+	r.logger.Info("[HandleChat] Checking LLM health", "healthy", r.llmAdapter.IsHealthy())
 	if r.llmAdapter.IsHealthy() {
-		ctx, cancel := utils.WithTimeoutFrom(ctx, r.config.LLMTimeout)
-		response, err = r.llmAdapter.Chat(ctx, req)
-		cancel()
+		r.logger.Info("[HandleChat] Calling primary LLM")
+		llmCtx, llmCancel := utils.WithTimeoutFrom(ctx, r.config.LLMTimeout)
+		response, err = r.llmAdapter.Chat(llmCtx, req)
+		llmCancel()
 
 		if err != nil {
-			// 降级到备用适配器
+			r.logger.Error("[HandleChat] Primary LLM failed", "error", err)
+			// 降级到备用适配器，使用原始 ctx（不是已过期的 llmCtx）
+			r.logger.Info("[HandleChat] Trying fallback adapter")
 			response, err = r.fallbackAdapter.Chat(ctx, req)
 		}
 	} else {
 		// 使用兜底回复
+		r.logger.Warn("[HandleChat] Primary LLM unhealthy, using fallback")
 		response, err = r.fallbackAdapter.Chat(ctx, req)
 	}
 
 	if err != nil {
+		r.logger.Error("[HandleChat] All LLM calls failed", "error", err)
 		return "", "", fmt.Errorf("failed to get response: %w", err)
 	}
+
+	r.logger.Info("[HandleChat] LLM response received", "choices_count", len(response.Choices))
 
 	// 提取回复
 	reply := strings.TrimSpace(response.Choices[0].Message.Content)
@@ -179,6 +208,8 @@ func (r *Runtime) HandleChat(ctx context.Context, session *Session, message stri
 
 	// 缓存回复
 	r.optimizer.SetCache(message, reply)
+
+	r.logger.Info("[HandleChat] Complete", "reply_length", len(reply))
 
 	return reply, emotionStr, nil
 }

@@ -24,7 +24,7 @@ frontend/
     ├── utils/
     │   └── const.js        # 常量定义
     ├── network/
-    │   └── WebSocketClient.js  # WebSocket 客户端
+    │   └── websocket.js    # WebSocket 客户端
     ├── ui/
     │   ├── Typewriter.js   # 打字机效果
     │   ├── DialogBox.js    # 对话框组件
@@ -57,12 +57,12 @@ npm install
 npm run dev
 ```
 
-访问 `http://localhost:3000`，游戏将自动打开。
+访问 `http://localhost:8084`，游戏将自动打开。
 
 ### 手动启动
 
 ```bash
-npx http-server -p 3000
+npx http-server -p 8084
 ```
 
 ## 游戏配置
@@ -85,6 +85,7 @@ npx http-server -p 3000
 - 自动重连
 - 心跳保活
 - 消息队列（断线时缓存）
+- 玩家 ID 同步
 
 ### DialogBox
 
@@ -92,6 +93,7 @@ npx http-server -p 3000
 - NPC 对话展示
 - 打字机逐字显示效果
 - 多行文本自动换行
+- 情绪状态显示
 
 ### NPCGuide
 
@@ -100,12 +102,19 @@ NPC 导游实体，包含：
 - 对话触发逻辑
 - 情绪状态展示
 
+## 视觉特性
+
+- **江南水乡主题**：水墨风格背景
+- **古风少女导游**：NPC 角色"小荷"
+- **半透明 UI**：现代化的对话框设计
+- **打字机效果**：逐字显示对话内容
+
 ## Docker 运行
 
 ```bash
 cd frontend
 docker build -t watertown-frontend .
-docker run -p 3000:80 watertown-frontend
+docker run -p 8084:80 watertown-frontend
 ```
 
 ## 生产部署

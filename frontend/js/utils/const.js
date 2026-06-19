@@ -18,7 +18,7 @@ const NPC_CONFIG = {
 
 // WebSocket 配置
 const WS_CONFIG = {
-    url: 'ws://localhost:8080/ws/game',
+    url: `ws://${window.location.hostname}:8080/ws/game`,
     reconnectInterval: 3000,
     pingInterval: 30000,
 };

@@ -45,10 +45,11 @@ type ChatMessagePayload struct {
 
 // WelcomePayload 欢迎消息负载
 type WelcomePayload struct {
-	GuideName  string   `json:"guideName"`
-	Message    string   `json:"message"`
-	IsFirstVisit bool  `json:"isFirstVisit"`
-	Tips       []string `json:"tips"`
+	GuideName    string   `json:"guideName"`
+	Message      string   `json:"message"`
+	IsFirstVisit bool     `json:"isFirstVisit"`
+	Tips         []string `json:"tips"`
+	PlayerID     string   `json:"playerId"` // 后端生成的玩家ID
 }
 
 // NPCReplyPayload NPC回复负载

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -45,14 +46,22 @@ type WebSocketConfig struct {
 	MessageSizeLimit int64        `yaml:"message_size_limit"`
 }
 
+// ModelConfig 单个模型配置
+type ModelConfig struct {
+	Name        string  `yaml:"name"`
+	BaseURL     string  `yaml:"base_url"`
+	APIKey      string  `yaml:"api_key"`
+	Enabled     bool    `yaml:"enabled"`
+	MaxTokens   int     `yaml:"max_tokens"`
+	Temperature float64 `yaml:"temperature"`
+}
+
 type LLMConfig struct {
-	APIKey        string       `yaml:"api_key"`
-	BaseURL       string       `yaml:"base_url"`
-	Model         string       `yaml:"model"`
-	FallbackModel string       `yaml:"fallback_model"`
-	Timeout       timeDuration `yaml:"timeout"`
-	MaxRetries    int          `yaml:"max_retries"`
-	RetryDelay    timeDuration `yaml:"retry_delay"`
+	Models     []ModelConfig `yaml:"models"`
+	Timeout    timeDuration  `yaml:"timeout"`
+	MaxRetries int           `yaml:"max_retries"`
+	RetryDelay timeDuration  `yaml:"retry_delay"`
+	AutoSwitch bool          `yaml:"auto_switch"`
 }
 
 type CircuitConfig struct {
@@ -74,17 +83,17 @@ type KnowledgeConfig struct {
 }
 
 type LoggingConfig struct {
-	Level  string       `yaml:"level"`
-	Format string       `yaml:"format"`
+	Level  string           `yaml:"level"`
+	Format string           `yaml:"format"`
 	File   FileLoggerConfig `yaml:"file"`
 }
 
 type FileLoggerConfig struct {
-	Enabled    bool `yaml:"enabled"`
+	Enabled    bool   `yaml:"enabled"`
 	Path       string `yaml:"path"`
-	MaxSize    int    `yaml:"max_size"`    // MB
+	MaxSize    int    `yaml:"max_size"` // MB
 	MaxBackups int    `yaml:"max_backups"`
-	MaxAge     int    `yaml:"max_age"`     // days
+	MaxAge     int    `yaml:"max_age"` // days
 	Compress   bool   `yaml:"compress"`
 }
 
@@ -177,8 +186,18 @@ func Load() (*Config, error) {
 	}
 
 	// 从环境变量覆盖敏感配置
-	if apiKey := os.Getenv("GLM_API_KEY"); apiKey != "" {
-		cfg.LLM.APIKey = apiKey
+	// 处理各个模型的 API Key
+	for i := range cfg.LLM.Models {
+		if strings.HasPrefix(cfg.LLM.Models[i].APIKey, "${") && strings.HasSuffix(cfg.LLM.Models[i].APIKey, "}") {
+			// 提取环境变量名称，例如 ${MIMO_API_KEY} -> MIMO_API_KEY
+			envName := cfg.LLM.Models[i].APIKey[2 : len(cfg.LLM.Models[i].APIKey)-1]
+			if envValue := os.Getenv(envName); envValue != "" {
+				cfg.LLM.Models[i].APIKey = envValue
+			} else {
+				// 环境变量未设置，记录警告
+				fmt.Printf("Warning: environment variable %s is not set for model %s\n", envName, cfg.LLM.Models[i].Name)
+			}
+		}
 	}
 
 	if dbPass := os.Getenv("DB_PASSWORD"); dbPass != "" {

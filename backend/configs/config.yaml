@@ -20,13 +20,26 @@ websocket:
   message_size_limit: 1048576  # 1MB
 
 llm:
-  api_key: ${GLM_API_KEY}
-  base_url: https://open.bigmodel.cn/api/paas/v4/chat/completions
-  model: glm-4
-  fallback_model: glm-4-flash
+  # 模型配置列表，按优先级排序
+  models:
+    - name: mimo-v2.5-pro
+      base_url: https://api.xiaomimimo.com/v1
+      api_key: ${MIMO_API_KEY}
+      enabled: true
+      max_tokens: 300
+      temperature: 0.7
+
+    - name: qwen-plus
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key: ${BAILIAN_API_KEY}
+      enabled: true
+      max_tokens: 500
+      temperature: 0.7
+
   timeout: 10s
-  max_retries: 3
-  retry_delay: 1s
+  max_retries: 2
+  retry_delay: 2s
+  auto_switch: true  # 是否自动切换到下一个模型
 
 circuit:
   max_failures: 5

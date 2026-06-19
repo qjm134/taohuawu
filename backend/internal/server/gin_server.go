@@ -13,8 +13,8 @@ import (
 	"github.com/watertown/guide/internal/cost"
 	"github.com/watertown/guide/internal/database"
 	"github.com/watertown/guide/internal/emotion"
-	"github.com/watertown/guide/internal/llm"
 	"github.com/watertown/guide/internal/knowledge"
+	"github.com/watertown/guide/internal/llm"
 	"github.com/watertown/guide/internal/websocket"
 	"github.com/watertown/guide/pkg/logging"
 	"gorm.io/gorm"
@@ -39,7 +39,18 @@ type Server struct {
 }
 
 // New 创建服务器
-func New(cfg *config.Config, db *gorm.DB, kb interface{}, logger logging.Logger) *Server {
+func New(cfg *config.Config, db *gorm.DB, kb interface{}, logger logging.Logger) (*Server, error) {
+	// 参数校验
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger is nil")
+	}
+
 	// 创建关闭上下文
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
@@ -56,9 +67,11 @@ func New(cfg *config.Config, db *gorm.DB, kb interface{}, logger logging.Logger)
 	}
 
 	s.setupRouter()
-	s.initAgentComponents(kb)
+	if err := s.initAgentComponents(kb); err != nil {
+		return nil, fmt.Errorf("failed to init agent components: %w", err)
+	}
 
-	return s
+	return s, nil
 }
 
 // setupRouter 设置路由
@@ -221,6 +234,11 @@ func (s *Server) corsMiddleware() gin.HandlerFunc {
 
 // handleWebSocket 处理 WebSocket
 func (s *Server) handleWebSocket(c *gin.Context) {
+	if s.wsHandler == nil {
+		s.logger.Error("WebSocket handler is nil")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "WebSocket handler not initialized"})
+		return
+	}
 	s.wsHandler.Handle(c)
 }
 
@@ -230,7 +248,17 @@ func (s *Server) SetWebSocketHandler(handler *WebSocketHandler) {
 }
 
 // initAgentComponents 初始化 Agent 组件
-func (s *Server) initAgentComponents(kb interface{}) {
+func (s *Server) initAgentComponents(kb interface{}) error {
+	// 安全的类型断言
+	var knowledgeBase *knowledge.KnowledgeBase
+	if kb != nil {
+		var ok bool
+		knowledgeBase, ok = kb.(*knowledge.KnowledgeBase)
+		if !ok {
+			return fmt.Errorf("kb is not *knowledge.KnowledgeBase")
+		}
+	}
+
 	// 创建 WebSocket Hub
 	s.agentHub = websocket.NewHub()
 	go s.agentHub.Run()
@@ -238,17 +266,20 @@ func (s *Server) initAgentComponents(kb interface{}) {
 	// 创建会话管理器
 	s.sessionManager = agent.NewSessionManager()
 
-	// 创建 LLM 适配器
-	llmAdapter := llm.NewGLMAdapter(
-		s.config.LLM.APIKey,
-		s.config.LLM.BaseURL,
-		s.config.LLM.Model,
-		s.config.LLM.Timeout.Duration,
-	)
+	// 创建多模型路由器
+	llmAdapter := llm.NewRouterFromConfig(s.config.LLM, s.logger)
+	s.logger.Info("Multi-model router created", "models", len(s.config.LLM.Models))
+
 	fallbackAdapter := llm.NewFallbackAdapter()
 
 	// 创建工具注册表
-	toolRegistry := agent.NewToolRegistry(kb.(*knowledge.KnowledgeBase))
+	var toolRegistry *agent.ToolRegistry
+	if knowledgeBase != nil {
+		toolRegistry = agent.NewToolRegistry(knowledgeBase)
+	} else {
+		s.logger.Warn("KnowledgeBase is nil, creating empty tool registry")
+		toolRegistry = agent.NewToolRegistry(nil)
+	}
 
 	// 创建成本优化器
 	optimizer := cost.NewOptimizer(
@@ -270,10 +301,11 @@ func (s *Server) initAgentComponents(kb interface{}) {
 		emotionDetector,
 		agent.Config{
 			MaxRetries:  s.config.LLM.MaxRetries,
-			Timeout:     s.config.LLM.Timeout.Duration,
-			LLMTimeout:  s.config.LLM.Timeout.Duration,
+			Timeout:     30 * time.Second, // 总超时 30 秒
+			LLMTimeout:  15 * time.Second, // primary LLM 调用超时 15 秒，剩余给 fallback
 			ToolTimeout: s.config.LLM.Timeout.Duration,
 		},
+		s.logger,
 	)
 
 	// 创建 WebSocket 处理器
@@ -289,4 +321,6 @@ func (s *Server) initAgentComponents(kb interface{}) {
 
 	// 设置 WebSocket 处理器
 	s.SetWebSocketHandler(wsHandler)
+
+	return nil
 }

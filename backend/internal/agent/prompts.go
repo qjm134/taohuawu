@@ -52,7 +52,7 @@ const (
 
 // BuildWelcomePrompt 构建欢迎提示
 func BuildWelcomePrompt(nickname string) string {
-	return fmt.Sprintf(WelcomePrompt, nickname)
+	return fmt.Sprintf(WelcomePrompt + "%s", nickname)
 }
 
 // BuildChatPrompt 构建聊天提示
@@ -66,7 +66,7 @@ func BuildChatPrompt(nickname, emotion, message string, history []Message) strin
 		historyStr += fmt.Sprintf("%s: %s\n", role, msg.Content)
 	}
 
-	return fmt.Sprintf(ChatPrompt, nickname, emotion, historyStr, message)
+	return fmt.Sprintf(ChatPrompt + "%s %s\n%s %s", nickname, emotion, historyStr, message)
 }
 
 // GetEmotionAdjust 获取情绪调整提示

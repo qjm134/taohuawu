@@ -99,11 +99,18 @@ const WSClient = (() => {
                     const message = JSON.parse(event.data);
 
                     // 忽略 PONG 消息
-                    if (message.type === MSG_TYPE.PONG) return;
+                if (message.type === MSG_TYPE.PONG) return;
 
-                    if (onMessageCallback) {
-                        onMessageCallback(message);
-                    }
+                // 如果是欢迎消息，更新玩家ID为后端生成的ID
+                if (message.type === MSG_TYPE.WELCOME && message.payload && message.payload.playerId) {
+                    playerId = message.payload.playerId;
+                    localStorage.setItem('ws_player_id', playerId);
+                    console.log('[WS] Updated playerId to backend ID:', playerId);
+                }
+
+                if (onMessageCallback) {
+                    onMessageCallback(message);
+                }
                 } catch (err) {
                     console.error('[WS] Failed to parse message:', err);
                 }

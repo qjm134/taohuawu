@@ -1,0 +1,475 @@
+package router
+
+import (
+	"context"
+	"fmt"
+	"math/rand"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/watertown/guide/internal/llm/model"
+	"github.com/watertown/guide/pkg/logging"
+)
+
+// Strategy 定义路由策略类型。
+type Strategy string
+
+const (
+	StrategyFixed      Strategy = "fixed"      // 固定使用指定模型
+	StrategyCost       Strategy = "cost"       // 优先选择价格最低的模型
+	StrategyLatency    Strategy = "latency"    // 优先选择延迟最低的模型
+	StrategyCapability Strategy = "capability" // 根据任务类型选择合适的模型
+	StrategyFallback   Strategy = "fallback"   // 使用降级链
+	StrategyWeighted   Strategy = "weighted"   // 按权重随机选择
+)
+
+// Router 统一的模型路由器，根据策略选择合适的 Provider。
+type Router struct {
+	mu sync.RWMutex
+
+	// providers 是所有可用的 provider，按名称索引。
+	providers map[string]*providerWrapper
+
+	// strategy 是当前使用的路由策略。
+	strategy Strategy
+
+	// fixedModel 在 Fixed 策略下指定固定使用的模型。
+	fixedModel string
+
+	// weights 在 Weighted 策略下指定各模型的权重。
+	weights map[string]float64
+
+	// fallbackChain 是降级链，从主模型到兜底模型。
+	fallbackChain []string
+
+	// capabilityMap 是能力映射，指定哪些模型适合什么任务。
+	capabilityMap map[model.TaskType][]string
+
+	// logger 用于记录日志
+	logger logging.Logger
+}
+
+// providerWrapper 包装 provider 及其统计数据。
+type providerWrapper struct {
+	provider model.Provider
+	stats    *model.ModelStats
+	enabled  bool
+}
+
+// NewRouter 创建一个新的路由器。
+func NewRouter(logger logging.Logger) *Router {
+	return &Router{
+		providers:     make(map[string]*providerWrapper),
+		strategy:      StrategyFallback, // 默认使用降级策略
+		weights:       make(map[string]float64),
+		fallbackChain: make([]string, 0),
+		capabilityMap: make(map[model.TaskType][]string),
+		logger:        logger,
+	}
+}
+
+// RegisterProvider 注册一个 provider。
+func (r *Router) RegisterProvider(provider model.Provider, enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	name := provider.Name()
+	wrapper := &providerWrapper{
+		provider: provider,
+		stats:    model.NewModelStats(),
+		enabled:  enabled,
+	}
+
+	if existing, ok := r.providers[name]; ok {
+		// 保持现有的统计数据
+		wrapper.stats = existing.stats
+	}
+
+	r.providers[name] = wrapper
+}
+
+// SetStrategy 设置路由策略。
+func (r *Router) SetStrategy(strategy Strategy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.strategy = strategy
+}
+
+// SetFixedModel 设置 Fixed 策略下使用的固定模型。
+func (r *Router) SetFixedModel(model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fixedModel = model
+}
+
+// SetWeight 设置 Weighted 策略下指定模型的权重。
+func (r *Router) SetWeight(providerName string, weight float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.weights[providerName] = weight
+}
+
+// SetFallbackChain 设置降级链。
+// 链中越靠前的模型优先级越高。
+func (r *Router) SetFallbackChain(providerNames []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallbackChain = append([]string{}, providerNames...)
+}
+
+// SetCapabilityMap 设置能力映射。
+func (r *Router) SetCapabilityMap(taskType model.TaskType, providerNames []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.capabilityMap[taskType] = append([]string{}, providerNames...)
+}
+
+// RouteRequest 根据当前策略选择 provider 并执行请求。
+// 注意：provider.Chat() 可能耗时较长，必须在锁外执行，否则会阻塞所有后续请求。
+func (r *Router) RouteRequest(ctx context.Context, req *model.ChatRequest) (*model.ChatResponse, error) {
+	// 第一步：在锁内选择 provider
+	r.mu.RLock()
+	provider, err := r.selectProvider(req)
+	r.mu.RUnlock()
+	if err != nil {
+		r.logger.Error("[Router] Failed to select provider", "error", err)
+		return nil, err
+	}
+
+	// 记录选中的 provider
+	r.logger.Info("[Router] Selected provider", "name", provider.Name(), "model", req.Model)
+
+	// 第二步：在锁外执行 LLM 调用（可能耗时很长）
+	startTime := nowTime()
+	resp, err := provider.Chat(ctx, req)
+	latency := nowTime().Sub(startTime)
+
+	// 第三步：记录统计信息（锁内）
+	r.recordStats(provider.Name(), latency, err != nil)
+
+	if err != nil {
+		r.logger.Error("[Router] Provider chat failed",
+			"provider", provider.Name(),
+			"latency", latency,
+			"error", err)
+
+		// 第四步：主 provider 失败，尝试降级链中的下一个
+		// 降级链容忍更高错误率，确保可用性优先于成本
+		if r.hasFallback() {
+			r.logger.Info("[Router] Trying fallback provider")
+			return r.tryFallback(ctx, req, provider.Name())
+		}
+		return nil, err
+	}
+
+	r.logger.Info("[Router] Provider chat succeeded",
+		"provider", provider.Name(),
+		"latency", latency)
+
+	return resp, nil
+}
+
+// RouteRequestStream 根据当前策略选择 provider 并执行流式请求。
+func (r *Router) RouteRequestStream(ctx context.Context, req *model.ChatRequest) (<-chan model.StreamChunk, error) {
+	// 第一步：在锁内选择 provider
+	r.mu.RLock()
+	provider, err := r.selectProvider(req)
+	r.mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+
+	// 第二步：在锁外执行流式请求
+	startTime := nowTime()
+	stream, err := provider.StreamChat(ctx, req)
+
+	// 启动 goroutine 记录统计信息
+	go func() {
+		var firstChunkTime time.Time
+		var hasError bool
+
+		for chunk := range stream {
+			if !chunk.Done && !hasError {
+				if chunk.Index == 0 {
+					firstChunkTime = nowTime()
+				}
+				if chunk.Err != nil {
+					hasError = true
+				}
+			}
+		}
+
+		if firstChunkTime.IsZero() {
+			return
+		}
+
+		latency := firstChunkTime.Sub(startTime)
+		r.recordStats(provider.Name(), latency, hasError)
+	}()
+
+	if err != nil {
+		if r.hasFallback() {
+			return r.tryFallbackStream(ctx, req, provider.Name())
+		}
+		return nil, err
+	}
+
+	return stream, nil
+}
+
+// selectProvider 根据当前策略选择 provider。
+func (r *Router) selectProvider(req *model.ChatRequest) (model.Provider, error) {
+	switch r.strategy {
+	case StrategyFixed:
+		return r.selectFixed()
+	case StrategyCost:
+		return r.selectByCost(req)
+	case StrategyLatency:
+		return r.selectByLatency(req)
+	case StrategyCapability:
+		return r.selectByCapability(req)
+	case StrategyWeighted:
+		return r.selectWeighted()
+	case StrategyFallback:
+		return r.selectFallback()
+	default:
+		return r.selectFallback()
+	}
+}
+
+// selectFixed 选择固定模型。
+func (r *Router) selectFixed() (model.Provider, error) {
+	if r.fixedModel == "" {
+		return nil, fmt.Errorf("fixed model not specified")
+	}
+	return r.getProvider(r.fixedModel)
+}
+
+// selectByCost 选择成本最低的 provider。
+// 成本 = (输入 tokens * 输入价格 + 输出 tokens * 输出价格)
+// 由于输出 tokens 未知，使用 1:1 比例估算。
+func (r *Router) selectByCost(req *model.ChatRequest) (model.Provider, error) {
+	candidates := r.getEnabledProviders()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no enabled providers")
+	}
+
+	// 估算输入 tokens
+	inputTokens := model.EstimateTokens(r.messagesToString(req.Messages))
+
+	// 按成本排序
+	sort.Slice(candidates, func(i, j int) bool {
+		costI := r.calculateCost(candidates[i], inputTokens)
+		costJ := r.calculateCost(candidates[j], inputTokens)
+		return costI < costJ
+	})
+
+	return candidates[0].provider, nil
+}
+
+// selectByLatency 选择延迟最低的 provider。
+func (r *Router) selectByLatency(req *model.ChatRequest) (model.Provider, error) {
+	candidates := r.getEnabledProviders()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no enabled providers")
+	}
+
+	// 按延迟排序（使用 EMA 延迟）
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].stats.Score() < candidates[j].stats.Score()
+	})
+
+	return candidates[0].provider, nil
+}
+
+// selectByCapability 根据任务类型选择合适的 provider。
+func (r *Router) selectByCapability(req *model.ChatRequest) (model.Provider, error) {
+	taskType := model.ClassifyTask(r.messagesToString(req.Messages))
+
+	// 获取适合该任务的 provider 列表
+	providers, ok := r.capabilityMap[taskType]
+	if !ok || len(providers) == 0 {
+		// 没有专门配置的 provider，使用所有启用的 provider
+		candidates := r.getEnabledProviders()
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("no enabled providers")
+		}
+		return candidates[0].provider, nil
+	}
+
+	// 从适合的 provider 中选择第一个可用的
+	for _, name := range providers {
+		if provider, err := r.getProvider(name); err == nil {
+			return provider, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no available providers for task type: %s", taskType)
+}
+
+// selectWeighted 按权重随机选择 provider。
+func (r *Router) selectWeighted() (model.Provider, error) {
+	candidates := r.getEnabledProviders()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no enabled providers")
+	}
+
+	// 计算总权重
+	totalWeight := 0.0
+	for _, c := range candidates {
+		weight := r.weights[c.provider.Name()]
+		if weight <= 0 {
+			weight = 1.0 // 默认权重
+		}
+		totalWeight += weight
+	}
+
+	// 随机选择
+	threshold := randFloat() * totalWeight
+	accumulated := 0.0
+
+	for _, c := range candidates {
+		weight := r.weights[c.provider.Name()]
+		if weight <= 0 {
+			weight = 1.0
+		}
+		accumulated += weight
+		if accumulated >= threshold {
+			return c.provider, nil
+		}
+	}
+
+	return candidates[0].provider, nil
+}
+
+// selectFallback 选择降级链中的第一个可用 provider。
+func (r *Router) selectFallback() (model.Provider, error) {
+	for _, name := range r.fallbackChain {
+		if provider, err := r.getProvider(name); err == nil {
+			return provider, nil
+		}
+	}
+
+	// 降级链为空或全部失败，使用第一个可用的 provider
+	candidates := r.getEnabledProviders()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no enabled providers")
+	}
+	return candidates[0].provider, nil
+}
+
+// tryFallback 尝试使用降级链中的下一个 provider，跳过已失败的 skipProvider。
+func (r *Router) tryFallback(ctx context.Context, req *model.ChatRequest, skipProvider string) (*model.ChatResponse, error) {
+	// 降级链容忍更高错误率，确保可用性优先于成本
+	for _, name := range r.fallbackChain {
+		if name == skipProvider {
+			continue // 跳过已经失败的 provider
+		}
+		if provider, err := r.getProvider(name); err == nil {
+			r.logger.Info("[Router] Trying fallback provider", "name", name)
+			startTime := nowTime()
+			resp, err := provider.Chat(ctx, req)
+			latency := nowTime().Sub(startTime)
+			r.recordStats(name, latency, err != nil)
+			if err == nil {
+				r.logger.Info("[Router] Fallback provider succeeded", "name", name, "latency", latency)
+				return resp, nil
+			}
+			r.logger.Error("[Router] Fallback provider failed", "name", name, "error", err)
+		}
+	}
+	r.logger.Error("[Router] All providers in fallback chain failed", "chain", r.fallbackChain)
+	return nil, fmt.Errorf("all providers in fallback chain failed")
+}
+
+// tryFallbackStream 尝试使用降级链中的下一个 provider 进行流式请求，跳过已失败的 skipProvider。
+func (r *Router) tryFallbackStream(ctx context.Context, req *model.ChatRequest, skipProvider string) (<-chan model.StreamChunk, error) {
+	for _, name := range r.fallbackChain {
+		if name == skipProvider {
+			continue
+		}
+		if provider, err := r.getProvider(name); err == nil {
+			startTime := nowTime()
+			stream, err := provider.StreamChat(ctx, req)
+			if err == nil {
+				// 启动 goroutine 记录统计信息（简化版）
+				go func() {
+					<-stream
+					latency := nowTime().Sub(startTime)
+					r.recordStats(name, latency, false)
+				}()
+				return stream, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("all providers in fallback chain failed")
+}
+
+// recordStats 记录 provider 的统计信息。
+func (r *Router) recordStats(providerName string, latency time.Duration, hasError bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if wrapper, ok := r.providers[providerName]; ok {
+		wrapper.stats.RecordLatency(latency)
+		wrapper.stats.RecordError(hasError)
+	}
+}
+
+// getProvider 获取指定名称的 provider。
+func (r *Router) getProvider(name string) (model.Provider, error) {
+	wrapper, ok := r.providers[name]
+	if !ok || !wrapper.enabled {
+		return nil, fmt.Errorf("provider not found or disabled: %s", name)
+	}
+	return wrapper.provider, nil
+}
+
+// getEnabledProviders 获取所有启用的 provider。
+func (r *Router) getEnabledProviders() []*providerWrapper {
+	providers := make([]*providerWrapper, 0)
+	for _, wrapper := range r.providers {
+		if wrapper.enabled {
+			providers = append(providers, wrapper)
+		}
+	}
+	return providers
+}
+
+// hasFallback 检查是否配置了降级链。
+func (r *Router) hasFallback() bool {
+	return len(r.fallbackChain) > 0
+}
+
+// calculateCost 计算指定 provider 的成本。
+func (r *Router) calculateCost(wrapper *providerWrapper, inputTokens int) float64 {
+	// 假设输出 tokens 与输入 tokens 相同
+	outputTokens := inputTokens
+	cost := float64(inputTokens)/1000*wrapper.provider.InputPricePer1K() +
+		float64(outputTokens)/1000*wrapper.provider.OutputPricePer1K()
+	return cost
+}
+
+// messagesToString 将消息列表转换为字符串，用于任务分类。
+func (r *Router) messagesToString(msgs []model.Message) string {
+	var sb strings.Builder
+	for _, msg := range msgs {
+		sb.WriteString(string(msg.Role))
+		sb.WriteString(": ")
+		sb.WriteString(msg.Content)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// nowTime 获取当前时间，便于测试时注入 mock。
+var nowTime = func() time.Time {
+	return time.Now()
+}
+
+// randFloat 生成随机浮点数，便于测试时注入 mock。
+var randFloat = func() float64 {
+	return rand.Float64()
+}
