@@ -3,13 +3,21 @@
  * 负责与后端 Go + Gin WebSocket 服务通信
  */
 const WSClient = (() => {
+    // 动态获取 WebSocket URL
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = window.location.hostname;
+    const wsPort = '8080'; // 后端端口
+    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws/game`;
+
     // 配置
     const CONFIG = {
-        url: 'ws://localhost:8080/ws/game',
+        url: wsUrl,
         reconnectInterval: 3000,
         maxReconnectInterval: 30000,
         pingInterval: 30000,
     };
+
+    console.log('[WS] WebSocket URL:', wsUrl);
 
     // 消息类型常量
     const MSG_TYPE = {
