@@ -4,10 +4,31 @@
  */
 const WSClient = (() => {
     // 动态获取 WebSocket URL
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = window.location.hostname;
-    const wsPort = '8080'; // 后端端口
-    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws/game`;
+    // 支持环境变量配置（Render 部署时使用）
+    const getWebSocketUrl = () => {
+        // 优先使用环境变量配置的后端地址
+        const backendUrl = window.BACKEND_URL || window.location.hostname;
+        
+        // 判断是否是生产环境（Render 部署）
+        const isProduction = window.location.hostname.includes('.onrender.com');
+        
+        if (isProduction) {
+            // 生产环境：使用固定的后端地址
+            const wsProtocol = 'wss:';
+            const wsHost = backendUrl.includes('://') 
+                ? backendUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+                : backendUrl;
+            return `${wsProtocol}//${wsHost}/ws/game`;
+        } else {
+            // 开发环境：使用当前域名 + 后端端口
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsHost = window.location.hostname;
+            const wsPort = '8080'; // 后端端口
+            return `${wsProtocol}//${wsHost}:${wsPort}/ws/game`;
+        }
+    };
+
+    const wsUrl = getWebSocketUrl();
 
     // 配置
     const CONFIG = {
