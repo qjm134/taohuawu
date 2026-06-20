@@ -135,9 +135,10 @@ func (r *Runtime) HandleChat(ctx context.Context, session *Session, message stri
 	emotionStr := string(em)
 	r.logger.Info("[HandleChat] Emotion detected", "emotion", emotionStr)
 
-	// 检查缓存
-	if cached, hit := r.optimizer.GetCache(message); hit {
-		r.logger.Info("[HandleChat] Cache hit", "cached_length", len(cached))
+	// 检查缓存（使用 session ID 隔离，确保每个会话有独立缓存）
+	cacheKey := session.ID + "_" + message
+	if cached, hit := r.optimizer.GetCache(cacheKey); hit {
+		r.logger.Info("[HandleChat] Cache hit", "sessionId", session.ID, "cached_length", len(cached))
 		session.AddMessage("assistant", cached, emotionStr, nil)
 		return cached, emotionStr, nil
 	}
@@ -206,8 +207,8 @@ func (r *Runtime) HandleChat(ctx context.Context, session *Session, message stri
 	session.AddMessage("user", message, emotionStr, nil)
 	session.AddMessage("assistant", reply, emotionStr, nil)
 
-	// 缓存回复
-	r.optimizer.SetCache(message, reply)
+	// 缓存回复（使用 session ID 隔离）
+	r.optimizer.SetCache(cacheKey, reply)
 
 	r.logger.Info("[HandleChat] Complete", "reply_length", len(reply))
 
