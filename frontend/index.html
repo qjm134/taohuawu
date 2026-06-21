@@ -10,6 +10,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=ZCOOL+XiaoWei&family=Noto+Serif+SC:wght@300;400;700&family=Ma+Shan+Zheng&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
+    
+    <!-- 后端配置（Render 部署时自动注入） -->
+    <script>
+        // 生产环境后端地址配置
+        // Render 部署时会自动替换为实际的后端地址
+        window.BACKEND_URL = window.BACKEND_URL || 'taohuawu-backend.onrender.com';
+    </script>
 </head>
 <body>
     <!-- ========== 背景层 ========== -->
